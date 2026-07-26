@@ -39,7 +39,7 @@ At its core it's a **generic, scheme-driven media labeler** — you define a nam
 
 - **Scheme = ordered list of field keys.** Fields and schemes are decoupled: a field key is a **reusable global building block**; a scheme is an ordered composition of field keys.
 - **Global data store**, not per-scheme config. One store holds three things: **schemes** (named ordered field-key lists), **field values** (namespaced *globally per field key* — two schemes using `movement` share one value history), and **usage/recency** (drives "top 3 most recent" suggestions per field).
-- **Field types get differentiated input handling:** label fields (top-3 recent + free-form), date fields (EXIF/media date → today → free-form enforcing `YYYY-MM-DD`), number fields (recents offered but free-form is common).
+- **Field type is a property of the field key**, fixed at creation and global: label (recents + free-form), date (capture date → today → free-form enforcing `YYYY-MM-DD`), number (digits with at most one decimal point — unit goes in the key name, never the value). Every field in a scheme always yields a value; there is no empty.
 - **Per-file flow:** preview → prompt each field → compose name → copy to destination → advance.
 - **Preview:** images rendered directly; videos previewed via **3 frames at 25% / 50% / 75%** of duration.
 - **Filename composition:** dashes *within* a value (`bench-press`), underscores *between* values (`bench-press_185_2026-06-28`), original extension preserved, field order fixed by scheme. **Collisions** append `_<n>` before the extension, incrementing.
@@ -54,9 +54,12 @@ Each of these is recorded in `docs/adr/` with its reasoning — read the ADR bef
 - [ADR-0004](docs/adr/0004-filename-composition-and-collisions.md) — filename composition and `_<n>` collision handling.
 - [ADR-0005](docs/adr/0005-video-preview-three-frames.md) — videos previewed as three frames, not played.
 - [ADR-0006](docs/adr/0006-kitty-graphics-terminal-constraint.md) — Kitty-graphics terminal required, no tmux.
-- [ADR-0007](docs/adr/0007-skip-undo-resume-deferred.md) — Skip, Undo, and Resume deferred from v1.
+- [ADR-0007](docs/adr/0007-skip-undo-resume-deferred.md) — Skip, Undo, and Resume deferred from v1 — but going back a field *is* in scope.
+- [ADR-0008](docs/adr/0008-field-types-on-the-key.md) — field type is a property of the field key; the three types; no absent values.
+- [ADR-0009](docs/adr/0009-values-stored-normalized.md) — values are normalized on entry and stored that way.
+- [ADR-0010](docs/adr/0010-capture-time-ordering.md) — capture-time processing order, and the timezone trap in video dates.
 
-Not yet worth an ADR: **destination** is declared per run and flat for now (subfolders possible later).
+Not yet worth an ADR: **destination** is declared per run and flat for now (subfolders possible later); the **store** lives at `~/.config/archivum/store.json`; the source walk is **flat**, filtered by an extension allowlist, skipping dotfiles and sidecars.
 
 ## Tech Stack
 
