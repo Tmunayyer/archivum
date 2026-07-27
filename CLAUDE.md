@@ -58,6 +58,7 @@ Each of these is recorded in `docs/adr/` with its reasoning — read the ADR bef
 - [ADR-0008](docs/adr/0008-field-types-on-the-key.md) — field type is a property of the field key; the three types; no absent values.
 - [ADR-0009](docs/adr/0009-values-stored-normalized.md) — values are normalized on entry and stored that way.
 - [ADR-0010](docs/adr/0010-capture-time-ordering.md) — capture-time processing order, and the timezone trap in video dates.
+- [ADR-0011](docs/adr/0011-previews-print-above-a-bubble-tea-viewport.md) — previews print above the Bubble Tea viewport via `tea.Println`, inline (no alt-screen), and are never deleted. **Prototyped, not assumed** — see issue #2.
 
 Not yet worth an ADR: **destination** is declared per run and flat for now (subfolders possible later); the **store** lives at `~/.config/archivum/store.json`; the source walk is **flat**, filtered by an extension allowlist, skipping dotfiles and sidecars.
 
@@ -65,9 +66,9 @@ Not yet worth an ADR: **destination** is declared per run and flat for now (subf
 
 - **Language:** Go — single static binary. (No `go.mod` yet; add with `go mod init <module-path>`.)
 - **CLI:** [Cobra](https://github.com/spf13/cobra).
-- **TUI:** a terminal-UI library (e.g. Bubble Tea) that coexists with inline Kitty image output.
+- **TUI:** [Bubble Tea](https://github.com/charmbracelet/bubbletea), confirmed by prototype to coexist with inline Kitty image output. Run **inline, without alt-screen**; emit previews with `tea.Println`; never send a Kitty delete escape. ADR-0011 explains why each of those three is load-bearing.
 - **Frame extraction:** `ffmpeg` (frames at 25/50/75% timestamps).
-- **Inline rendering:** `chafa --format kitty`.
+- **Inline rendering:** `chafa --format kitty`. Read the row count back off the payload's `r=` — chafa preserves aspect ratio and returns fewer rows than requested.
 - **EXIF / media date:** an EXIF library or `exiftool` shell-out.
 
 ### Terminal constraint
