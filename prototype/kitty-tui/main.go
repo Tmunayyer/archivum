@@ -111,12 +111,16 @@ func newModel(files []mediaFile, s strategy) model {
 	in.Prompt = ""
 	in.Focus()
 	return model{
-		files:       files,
-		values:      make([]string, len(scheme)),
-		input:       in,
-		rc:          -1,
+		files:  files,
+		values: make([]string, len(scheme)),
+		input:  in,
+		rc:     -1,
+		// Off, and this is the finding: `a=d,d=A` deletes images globally,
+		// including the one already scrolled into the history. The picture
+		// goes but the rows it occupied stay, so the previous preview becomes
+		// a hole. Toggle it on with ctrl+d to watch that happen.
+		deleteFirst: false,
 		strat:       s,
-		deleteFirst: true,
 		status:      "ready",
 	}
 }

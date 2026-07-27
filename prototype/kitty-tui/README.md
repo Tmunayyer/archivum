@@ -96,8 +96,24 @@ Do **not** try to drive this from a script or piped stdin — `script`/pty
 harnesses drop and reorder keys while the 1 MB image payloads are being
 written, which looks exactly like a state bug and isn't one. Type at it.
 
-## Verdict
+## Verdict — yes, with strategy 0 and delete-first off
 
-_To be filled in on issue #2 once it's been driven by hand._ Nothing here has
-been judged visually yet — the whole question is what the screen looks like,
-and that needs a human in front of it.
+Driven by hand in ghostty, 2026-07-26.
+
+**Bubble Tea's repaint does not touch Kitty images.** Typing, arrowing through
+recents, and going back a field left the frames completely undisturbed — the
+failure the issue was worried about does not happen. Strategy 0
+(`inline/println`, no alt-screen) was never even departed from; the other four
+were not needed.
+
+**The one thing that broke previews was the delete-all escape.**
+`\x1b_Ga=d,d=A\x1b\\` deletes placements *globally*, including the preview
+already scrolled up into the history. The terminal drops the picture, but the
+rows it occupied are ordinary grid rows and simply go blank — so advancing a
+file left a preview-shaped hole behind. With delete-first off, the old preview
+stays put in the scrollback and the new one is drawn beneath it. That is now
+the default.
+
+Consequence worth carrying into production: nothing ever frees the transmitted
+image data, so a long batch leaves every preview in the terminal's image store.
+See ADR-0011.
