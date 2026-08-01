@@ -1,0 +1,103 @@
+// Package cmd is the Cobra wiring: flag parsing, preflight checks, and
+// dependency construction. Everything here is configuration; behaviour
+// lives behind the run model's seam.
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/spf13/cobra"
+
+	"github.com/Tmunayyer/archivum/internal/run"
+	"github.com/Tmunayyer/archivum/internal/source"
+	"github.com/Tmunayyer/archivum/internal/store"
+)
+
+var rootCmd = &cobra.Command{
+	Use:           "archivum",
+	Short:         "Batch-label media by copying files under composed names",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+}
+
+func init() {
+	var srcDir, destDir, schemeName string
+
+	runCmd := &cobra.Command{
+		Use:   "run",
+		Short: "Label every eligible file in a source folder into a destination folder",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBatch(srcDir, destDir, schemeName)
+		},
+	}
+	runCmd.Flags().StringVar(&srcDir, "source", "", "folder of media to label (required)")
+	runCmd.Flags().StringVar(&destDir, "dest", "", "folder the labeled copies land in (required)")
+	runCmd.Flags().StringVar(&schemeName, "scheme", "", "name of the scheme to prompt with (required)")
+	for _, f := range []string{"source", "dest", "scheme"} {
+		cobra.CheckErr(runCmd.MarkFlagRequired(f))
+	}
+	rootCmd.AddCommand(runCmd)
+}
+
+// Execute runs the CLI and exits non-zero on failure.
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "archivum:", err)
+		os.Exit(1)
+	}
+}
+
+func storePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locating the store: %w", err)
+	}
+	return filepath.Join(home, ".config", "archivum", "store.json"), nil
+}
+
+func runBatch(srcDir, destDir, schemeName string) error {
+	path, err := storePath()
+	if err != nil {
+		return err
+	}
+	st, err := store.Load(path)
+	if err != nil {
+		return err
+	}
+	fields, ok := st.Scheme(schemeName)
+	if !ok {
+		return fmt.Errorf("scheme %q not found in %s — seed it by hand for now; inline scheme creation is a later ticket", schemeName, path)
+	}
+
+	files, err := source.List(srcDir)
+	if err != nil {
+		return fmt.Errorf("reading source folder: %w", err)
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("no eligible media files in %s — nothing to label", srcDir)
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating destination folder: %w", err)
+	}
+
+	fmt.Printf("%d file(s) to label from %s\n", len(files), srcDir)
+
+	// Inline on purpose: no alt-screen, so previews and progress lines
+	// scroll up into terminal history (ADR-0011).
+	model := run.New(files, fields, run.Deps{
+		Store:   st,
+		Dest:    run.DirDest{Dir: destDir},
+		DestDir: destDir,
+	})
+	final, err := tea.NewProgram(model).Run()
+	if err != nil {
+		return err
+	}
+
+	m := final.(run.Model)
+	fmt.Printf("copied %d of %d file(s) to %s\n", m.Copied(), len(files), destDir)
+	return m.Err()
+}

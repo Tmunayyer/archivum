@@ -18,7 +18,7 @@ Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 
 ## Status
 
-This repository is at the **concept stage** — no source code yet, only docs and a Go `.gitignore`. The design is settled; expand this file with real commands and architecture as code lands.
+The design is settled and the **tracer bullet is in** (issue #5): `archivum run --source <dir> --dest <dir> --scheme <name>` labels a folder end-to-end with a hand-seeded scheme of `label` fields — filename order, free-form prompts, no preview yet. Packages live under `internal/` (`normalize`, `compose`, `source`, `store`, `run`, `cmd`); `run` is seam 1, driven in tests by `tea.KeyMsg` sequences against fakes. Previews, capture-date ordering, recents, field types beyond `label`, and inline scheme creation are later tickets under #4.
 
 ## Source of Truth
 
@@ -64,7 +64,7 @@ Not yet worth an ADR: **destination** is declared per run and flat for now (subf
 
 ## Tech Stack
 
-- **Language:** Go — single static binary. (No `go.mod` yet; add with `go mod init <module-path>`.)
+- **Language:** Go — single static binary. Module: `github.com/Tmunayyer/archivum`.
 - **CLI:** [Cobra](https://github.com/spf13/cobra).
 - **TUI:** [Bubble Tea](https://github.com/charmbracelet/bubbletea), confirmed by prototype to coexist with inline Kitty image output. Run **inline, without alt-screen**; emit previews with `tea.Println`; never send a Kitty delete escape. ADR-0011 explains why each of those three is load-bearing.
 - **Frame extraction:** `ffmpeg` (frames at 25/50/75% timestamps).
@@ -75,15 +75,12 @@ Not yet worth an ADR: **destination** is declared per run and flat for now (subf
 
 Runs in **cmux** (libghostty-based, Kitty graphics protocol) so frames render inline. ⚠️ Do **not** run Archivum nested inside `tmux` in cmux — Kitty escape sequences don't pass through tmux there and images won't render. Use a plain cmux pane.
 
-## Getting started (once code exists)
+## Getting started
 
 ```sh
-go mod init <module-path>   # once, to create go.mod
-go build ./...              # build all packages
-go test ./...               # run all tests
-go test -run TestName ./pkg # run a single test
-go vet ./...                # static checks
-gofmt -l -w .               # format
+go build ./...                       # build all packages
+go test ./...                        # run all tests
+go test -run TestName ./internal/run # run a single test
+go vet ./...                         # static checks
+gofmt -l -w .                        # format
 ```
-
-Replace these placeholders with the real commands as the module takes shape.
