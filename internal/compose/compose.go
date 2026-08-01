@@ -9,16 +9,12 @@ import (
 	"strings"
 )
 
-// Name joins already-normalized values with underscores and appends the
-// original extension (which keeps whatever case it arrived with).
-func Name(values []string, ext string) string {
-	return strings.Join(values, "_") + ext
-}
-
-// Resolve returns base+ext, or the first base_<n>+ext that exists reports
-// false for, so a re-run never overwrites an earlier result. The predicate
-// keeps this package free of filesystem knowledge.
-func Resolve(base, ext string, exists func(name string) bool) string {
+// Resolve composes a name from already-normalized values and returns it, or
+// the first _<n>-suffixed variant that exists reports false for, so a
+// re-run never overwrites an earlier result. The predicate keeps this
+// package free of filesystem knowledge.
+func Resolve(values []string, ext string, exists func(name string) bool) string {
+	base := strings.Join(values, "_")
 	name := base + ext
 	for n := 1; exists(name); n++ {
 		name = fmt.Sprintf("%s_%d%s", base, n, ext)
