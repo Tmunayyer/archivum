@@ -18,7 +18,7 @@ Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 
 ## Status
 
-The design is settled and the **tracer bullet is in** (issue #5): `archivum run --source <dir> --dest <dir> --scheme <name>` labels a folder end-to-end with a hand-seeded scheme of `label` fields — filename order, free-form prompts, no preview yet. Packages live under `internal/` (`normalize`, `compose`, `source`, `store`, `run`, `cmd`); `run` is seam 1, driven in tests by `tea.KeyMsg` sequences against fakes. Previews, capture-date ordering, recents, field types beyond `label`, and inline scheme creation are later tickets under #4.
+The design is settled and the **tracer bullet is in** (issue #5): `archivum run --source <dir> --dest <dir> --scheme <name>` labels a folder end-to-end with a hand-seeded scheme of `label` fields — filename order, no preview yet. The batch interactions landed with #6: per-field recents (top three, arrow keys, `-1`-cursor free-form state), shift+tab back-a-field, and in-file progress. Packages live under `internal/` (`normalize`, `compose`, `source`, `store`, `run`, `cmd`); `run` is seam 1, driven in tests by `tea.KeyMsg` sequences against fakes (plus a real store for recency behaviour). Previews, capture-date ordering, field types beyond `label`, and inline scheme creation are later tickets under #4.
 
 ## Source of Truth
 
