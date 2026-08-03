@@ -67,6 +67,16 @@ func (d *fakeDest) Copy(src, name string) error {
 	return nil
 }
 
+// sources wraps bare source paths as run.Files; capture dates stay zero —
+// nothing at seam 1 reads them until the date field type lands (#9).
+func sources(paths ...string) []run.File {
+	files := make([]run.File, len(paths))
+	for i, p := range paths {
+		files[i] = run.File{Path: p}
+	}
+	return files
+}
+
 // --- keystroke driver --------------------------------------------------------
 
 func typed(s string) tea.Msg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
@@ -135,7 +145,7 @@ func TestComposition(t *testing.T) {
 		st := &fakeStore{}
 		dest := &fakeDest{}
 		m := run.New(
-			[]string{"/src/IMG_0001.MOV", "/src/IMG_0002.jpg"},
+			sources("/src/IMG_0001.MOV", "/src/IMG_0002.jpg"),
 			[]string{"movement", "weight", "date"},
 			run.Deps{Store: st, Dest: dest},
 		)
@@ -166,7 +176,7 @@ func TestCollisions(t *testing.T) {
 			"squat.mp4":   true,
 			"squat_1.mp4": true,
 		}}
-		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: &fakeStore{}, Dest: dest})
+		m := run.New(sources("/src/a.mp4"), []string{"movement"}, run.Deps{Store: &fakeStore{}, Dest: dest})
 		drive(t, m, flatten(answer("squat"))...)
 
 		if len(dest.copies) != 1 || dest.copies[0].name != "squat_2.mp4" {
@@ -179,7 +189,7 @@ func TestNormalization(t *testing.T) {
 	t.Run("typed values are normalized in both the composed name and the store", func(t *testing.T) {
 		st := &fakeStore{}
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.jpg"}, []string{"movement", "place"}, run.Deps{Store: st, Dest: dest})
+		m := run.New(sources("/src/a.jpg"), []string{"movement", "place"}, run.Deps{Store: st, Dest: dest})
 		drive(t, m, flatten(answer("Farmer's Walk"), answer("Café  Lundi"))...)
 
 		if len(dest.copies) != 1 || dest.copies[0].name != "farmers-walk_café-lundi.jpg" {
@@ -195,7 +205,7 @@ func TestNormalization(t *testing.T) {
 func TestEmptyRejection(t *testing.T) {
 	t.Run("an empty answer and one normalizing to nothing are both refused", func(t *testing.T) {
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.jpg"}, []string{"movement"}, run.Deps{Store: &fakeStore{}, Dest: dest})
+		m := run.New(sources("/src/a.jpg"), []string{"movement"}, run.Deps{Store: &fakeStore{}, Dest: dest})
 
 		m = drive(t, m, enter)
 		if len(dest.copies) != 0 {
@@ -227,7 +237,7 @@ func TestCopySemantics(t *testing.T) {
 			}
 		}
 
-		m := run.New(srcs, []string{"movement"}, run.Deps{Store: &fakeStore{}, Dest: run.DirDest{Dir: destDir}})
+		m := run.New(sources(srcs...), []string{"movement"}, run.Deps{Store: &fakeStore{}, Dest: run.DirDest{Dir: destDir}})
 		m = drive(t, m, flatten(answer("squat"), answer("squat"))...)
 		if err := m.Err(); err != nil {
 			t.Fatal(err)
@@ -259,7 +269,7 @@ func TestStoreDurability(t *testing.T) {
 		st := &fakeStore{}
 		dest := &fakeDest{}
 		m := run.New(
-			[]string{"/src/a.jpg", "/src/b.jpg"},
+			sources("/src/a.jpg", "/src/b.jpg"),
 			[]string{"movement", "weight"},
 			run.Deps{Store: st, Dest: dest},
 		)
@@ -306,7 +316,7 @@ func TestRecents(t *testing.T) {
 	}
 
 	t.Run("a field with history lists the top three most-recent-first", func(t *testing.T) {
-		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: &fakeDest{}})
+		m := run.New(sources("/src/a.mp4"), []string{"movement"}, run.Deps{Store: seed(t), Dest: &fakeDest{}})
 		view := m.View()
 		assertOrder(t, view, "dip", "squat", "row")
 		if strings.Contains(view, "curl") {
@@ -316,7 +326,7 @@ func TestRecents(t *testing.T) {
 
 	t.Run("enter alone confirms the top recent", func(t *testing.T) {
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		m := run.New(sources("/src/a.mp4"), []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
 		drive(t, m, enter)
 		if len(dest.copies) != 1 || dest.copies[0].name != "dip.mp4" {
 			t.Fatalf("copies = %v, want dip.mp4 from a single keystroke", dest.copies)
@@ -325,7 +335,7 @@ func TestRecents(t *testing.T) {
 
 	t.Run("arrows move the highlight and enter confirms it, clamping at the ends", func(t *testing.T) {
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		m := run.New(sources("/src/a.mp4"), []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
 		drive(t, m, down, down, down, enter) // third down clamps at the last entry
 		if len(dest.copies) != 1 || dest.copies[0].name != "row.mp4" {
 			t.Fatalf("copies = %v, want row.mp4 (the third recent)", dest.copies)
@@ -334,7 +344,7 @@ func TestRecents(t *testing.T) {
 
 	t.Run("typing at any point leaves the list for free-form entry", func(t *testing.T) {
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		m := run.New(sources("/src/a.mp4"), []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
 		drive(t, m, flatten([]tea.Msg{down}, answer("kick"))...)
 		if len(dest.copies) != 1 || dest.copies[0].name != "kick.mp4" {
 			t.Fatalf("copies = %v, want kick.mp4 from free-form entry", dest.copies)
@@ -343,7 +353,7 @@ func TestRecents(t *testing.T) {
 
 	t.Run("arrowing up past the top returns to free-form entry", func(t *testing.T) {
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		m := run.New(sources("/src/a.mp4"), []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
 		m = drive(t, m, up, enter)
 		if len(dest.copies) != 0 {
 			t.Fatalf("copies = %v, want none — enter above the list is an empty free-form entry", dest.copies)
@@ -355,7 +365,7 @@ func TestRecents(t *testing.T) {
 
 	t.Run("backspace also leaves the list, editing the typed text", func(t *testing.T) {
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		m := run.New(sources("/src/a.mp4"), []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
 		backspace := tea.Msg(tea.KeyMsg{Type: tea.KeyBackspace})
 		drive(t, m, typed("xx"), down, backspace, enter)
 		if len(dest.copies) != 1 || dest.copies[0].name != "x.mp4" {
@@ -364,7 +374,7 @@ func TestRecents(t *testing.T) {
 	})
 
 	t.Run("a field with no history shows no list", func(t *testing.T) {
-		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: &fakeStore{}, Dest: &fakeDest{}})
+		m := run.New(sources("/src/a.mp4"), []string{"movement"}, run.Deps{Store: &fakeStore{}, Dest: &fakeDest{}})
 		if strings.Contains(m.View(), "▸") {
 			t.Fatalf("View() = %q, want no recents list on an empty history", m.View())
 		}
@@ -375,7 +385,7 @@ func TestRecents(t *testing.T) {
 		for _, v := range []string{"curl", "row"} {
 			st.RecordValue("movement", v)
 		}
-		m := run.New([]string{"/src/a.jpg", "/src/b.jpg"}, []string{"movement"}, run.Deps{Store: st, Dest: &fakeDest{}})
+		m := run.New(sources("/src/a.jpg", "/src/b.jpg"), []string{"movement"}, run.Deps{Store: st, Dest: &fakeDest{}})
 		m = drive(t, m, flatten(answer("squat"))...)
 		assertOrder(t, m.View(), "▸ squat", "row", "curl")
 	})
@@ -385,17 +395,17 @@ func TestRecents(t *testing.T) {
 		for _, v := range []string{"curl", "row", "squat"} {
 			st.RecordValue("movement", v)
 		}
-		m := run.New([]string{"/src/a.jpg", "/src/b.jpg"}, []string{"movement"}, run.Deps{Store: st, Dest: &fakeDest{}})
+		m := run.New(sources("/src/a.jpg", "/src/b.jpg"), []string{"movement"}, run.Deps{Store: st, Dest: &fakeDest{}})
 		m = drive(t, m, down, enter) // select "row", the second recent
 		assertOrder(t, m.View(), "▸ row", "squat", "curl")
 	})
 
 	t.Run("recents are global per field key, shared across schemes", func(t *testing.T) {
 		st := testStore(t)
-		a := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb"}, run.Deps{Store: st, Dest: &fakeDest{}})
+		a := run.New(sources("/src/a.jpg"), []string{"movement", "weight-lb"}, run.Deps{Store: st, Dest: &fakeDest{}})
 		drive(t, a, flatten(answer("squat"), answer("185"))...)
 
-		b := run.New([]string{"/src/b.jpg"}, []string{"movement"}, run.Deps{Store: st, Dest: &fakeDest{}})
+		b := run.New(sources("/src/b.jpg"), []string{"movement"}, run.Deps{Store: st, Dest: &fakeDest{}})
 		if !strings.Contains(b.View(), "▸ squat") {
 			t.Fatalf("View() = %q, want squat offered under a different scheme", b.View())
 		}
@@ -405,7 +415,7 @@ func TestRecents(t *testing.T) {
 func TestBackAField(t *testing.T) {
 	t.Run("shift+tab pre-fills the previous answer editable with the cursor at the end", func(t *testing.T) {
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb"}, run.Deps{Store: &fakeStore{}, Dest: dest})
+		m := run.New(sources("/src/a.jpg"), []string{"movement", "weight-lb"}, run.Deps{Store: &fakeStore{}, Dest: dest})
 		drive(t, m, flatten(
 			answer("bench"),
 			[]tea.Msg{shiftTab, typed("-press"), enter}, // appending proves prefill and cursor-at-end
@@ -418,7 +428,7 @@ func TestBackAField(t *testing.T) {
 
 	t.Run("shift+tab on the first field is a no-op", func(t *testing.T) {
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb"}, run.Deps{Store: &fakeStore{}, Dest: dest})
+		m := run.New(sources("/src/a.jpg"), []string{"movement", "weight-lb"}, run.Deps{Store: &fakeStore{}, Dest: dest})
 		m = drive(t, m, shiftTab)
 		if !strings.Contains(m.View(), "movement (1/2)") {
 			t.Fatalf("View() = %q, want to stay on the first field", m.View())
@@ -431,7 +441,7 @@ func TestBackAField(t *testing.T) {
 
 	t.Run("re-advancing after going back keeps the later answers pre-filled", func(t *testing.T) {
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb", "date"}, run.Deps{Store: &fakeStore{}, Dest: dest})
+		m := run.New(sources("/src/a.jpg"), []string{"movement", "weight-lb", "date"}, run.Deps{Store: &fakeStore{}, Dest: dest})
 		drive(t, m, flatten(
 			answer("one"), answer("two"),
 			[]tea.Msg{shiftTab, shiftTab}, // back to the first field
@@ -447,7 +457,7 @@ func TestBackAField(t *testing.T) {
 		st := testStore(t)
 		st.RecordValue("movement", "row")
 		dest := &fakeDest{}
-		m := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb"}, run.Deps{Store: st, Dest: dest})
+		m := run.New(sources("/src/a.jpg"), []string{"movement", "weight-lb"}, run.Deps{Store: st, Dest: dest})
 		drive(t, m, flatten(
 			answer("bench"),
 			[]tea.Msg{shiftTab, enter}, // straight back and re-confirm
@@ -462,7 +472,7 @@ func TestBackAField(t *testing.T) {
 func TestProgress(t *testing.T) {
 	t.Run("the prompt shows field position, total, and the values already given", func(t *testing.T) {
 		m := run.New(
-			[]string{"/src/a.jpg"},
+			sources("/src/a.jpg"),
 			[]string{"movement", "weight-lb", "date"},
 			run.Deps{Store: &fakeStore{}, Dest: &fakeDest{}},
 		)
@@ -480,7 +490,7 @@ func TestCopyFailure(t *testing.T) {
 	t.Run("a copy failure stops the run naming the file it was on", func(t *testing.T) {
 		st := &fakeStore{}
 		dest := &fakeDest{err: errors.New("read-only file system")}
-		m := run.New([]string{"/src/IMG_0042.jpg"}, []string{"movement"}, run.Deps{Store: st, Dest: dest})
+		m := run.New(sources("/src/IMG_0042.jpg"), []string{"movement"}, run.Deps{Store: st, Dest: dest})
 		m = drive(t, m, flatten(answer("squat"))...)
 
 		err := m.Err()

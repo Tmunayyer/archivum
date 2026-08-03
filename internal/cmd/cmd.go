@@ -6,11 +6,13 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/Tmunayyer/archivum/internal/capturedate"
 	"github.com/Tmunayyer/archivum/internal/run"
 	"github.com/Tmunayyer/archivum/internal/source"
 	"github.com/Tmunayyer/archivum/internal/store"
@@ -58,7 +60,20 @@ func storePath() (string, error) {
 	return filepath.Join(home, ".config", "archivum", "store.json"), nil
 }
 
+// preflight fails the run at startup when a required external tool is
+// missing, so the failure is one clear message rather than a mid-batch
+// surprise (issue #4's failure policy). ffmpeg/ffprobe/chafa join with #8.
+func preflight() error {
+	if _, err := exec.LookPath("exiftool"); err != nil {
+		return fmt.Errorf("exiftool is required to resolve capture dates but was not found on PATH — install it (e.g. `brew install exiftool`) and re-run")
+	}
+	return nil
+}
+
 func runBatch(srcDir, destDir, schemeName string) error {
+	if err := preflight(); err != nil {
+		return err
+	}
 	path, err := storePath()
 	if err != nil {
 		return err
@@ -83,11 +98,22 @@ func runBatch(srcDir, destDir, schemeName string) error {
 		return fmt.Errorf("creating destination folder: %w", err)
 	}
 
-	fmt.Printf("%d file(s) to label from %s\n", len(files), srcDir)
+	// One metadata pass over the whole batch, before the first prompt, so
+	// files arrive in capture order and the wait is paid once (ADR-0010).
+	resolved, err := capturedate.Resolve(files)
+	if err != nil {
+		return err
+	}
+	ordered := make([]run.File, len(resolved))
+	for i, f := range resolved {
+		ordered[i] = run.File{Path: f.Path, CaptureDate: f.CaptureDate}
+	}
+
+	fmt.Printf("%d file(s) to label from %s\n", len(ordered), srcDir)
 
 	// Inline on purpose: no alt-screen, so previews and progress lines
 	// scroll up into terminal history (ADR-0011).
-	model := run.New(files, fields, run.Deps{
+	model := run.New(ordered, fields, run.Deps{
 		Store:   st,
 		Dest:    run.DirDest{Dir: destDir},
 		DestDir: destDir,
