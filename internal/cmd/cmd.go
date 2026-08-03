@@ -82,9 +82,24 @@ func runBatch(srcDir, destDir, schemeName string) error {
 	if err != nil {
 		return err
 	}
-	fields, ok := st.Scheme(schemeName)
+	keys, ok := st.Scheme(schemeName)
 	if !ok {
 		return fmt.Errorf("scheme %q not found in %s — seed it by hand for now; inline scheme creation is a later ticket", schemeName, path)
+	}
+	fields := make([]run.Field, len(keys))
+	for i, key := range keys {
+		// A key with no fieldKeys entry predates types (hand-seeded store);
+		// label is the behaviour those keys have always had.
+		fieldType := run.Label
+		if declared, ok := st.FieldKeyType(key); ok {
+			switch declared {
+			case string(run.Label), string(run.Number), string(run.Date):
+				fieldType = run.FieldType(declared)
+			default:
+				return fmt.Errorf("field key %q in %s has unknown type %q — expected label, number, or date", key, path, declared)
+			}
+		}
+		fields[i] = run.Field{Key: key, Type: fieldType}
 	}
 
 	files, err := source.List(srcDir)

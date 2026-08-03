@@ -54,6 +54,22 @@ type File struct {
 	CaptureDate time.Time
 }
 
+// FieldType is the behaviour of a field key, fixed at the key's creation
+// and global thereafter (ADR-0008).
+type FieldType string
+
+const (
+	Label  FieldType = "label"  // recents plus unrestricted free-form entry
+	Number FieldType = "number" // digits with at most one decimal point; recents
+	Date   FieldType = "date"   // capture date, then today, then YYYY-MM-DD free-form
+)
+
+// Field is one slot of the scheme: the field key and its type.
+type Field struct {
+	Key  string
+	Type FieldType
+}
+
 type copiedMsg struct{ path string }
 
 type failedMsg struct{ err error }
@@ -62,7 +78,7 @@ type failedMsg struct{ err error }
 // exactly one slot per scheme field — there is no absent value (ADR-0008).
 type Model struct {
 	files  []File
-	fields []string
+	fields []Field
 	deps   Deps
 
 	fi      int      // current file index
@@ -80,8 +96,8 @@ type Model struct {
 
 // New builds a model over the batch: files carry full source paths in
 // processing order (capture order, per ADR-0010), fields the scheme's
-// field keys in prompt order.
-func New(files []File, fields []string, deps Deps) Model {
+// field keys in prompt order, each with its type (ADR-0008).
+func New(files []File, fields []Field, deps Deps) Model {
 	ti := textinput.New()
 	ti.Prompt = "> "
 	ti.Cursor.SetMode(cursor.CursorStatic)
@@ -102,7 +118,7 @@ func New(files []File, fields []string, deps Deps) Model {
 // repeating a value is a bare enter; a prefill or an empty history starts
 // free-form.
 func (m Model) enterField(prefill string) Model {
-	m.recents = m.deps.Store.Recents(m.fields[m.fx], maxRecents)
+	m.recents = m.deps.Store.Recents(m.fields[m.fx].Key, maxRecents)
 	m.input.SetValue(prefill)
 	m.input.CursorEnd()
 	m.rc = 0
@@ -203,8 +219,8 @@ func (m Model) copyCurrent() tea.Cmd {
 		if err := deps.Dest.Copy(src, name); err != nil {
 			return failedMsg{fmt.Errorf("copying %s: %w", filepath.Base(src), err)}
 		}
-		for i, key := range fields {
-			deps.Store.RecordValue(key, values[i])
+		for i, f := range fields {
+			deps.Store.RecordValue(f.Key, values[i])
 		}
 		if err := deps.Store.Save(); err != nil {
 			return failedMsg{fmt.Errorf("saving store after %s: %w", filepath.Base(src), err)}
@@ -235,9 +251,9 @@ func (m Model) View() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "file %d/%d — %s\n", m.fi+1, len(m.files), filepath.Base(m.files[m.fi].Path))
 	for i := range m.fx {
-		fmt.Fprintf(&b, "  %s: %s\n", m.fields[i], m.values[i])
+		fmt.Fprintf(&b, "  %s: %s\n", m.fields[i].Key, m.values[i])
 	}
-	fmt.Fprintf(&b, "%s (%d/%d) %s\n", m.fields[m.fx], m.fx+1, len(m.fields), m.input.View())
+	fmt.Fprintf(&b, "%s (%d/%d) %s\n", m.fields[m.fx].Key, m.fx+1, len(m.fields), m.input.View())
 	for i, r := range m.recents {
 		marker := "  "
 		if i == m.rc {

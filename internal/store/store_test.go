@@ -16,7 +16,7 @@ func storePath(t *testing.T) string {
 
 const seeded = `{
   "version": 1,
-  "fieldKeys": { "movement": { "type": "label" }, "location": { "type": "label" } },
+  "fieldKeys": { "movement": { "type": "label" }, "location": { "type": "label" }, "weight-lb": { "type": "number" } },
   "values": {
     "movement": [
       { "value": "bench-press", "lastUsed": "2026-07-26T18:04:11Z", "count": 12 }
@@ -78,6 +78,28 @@ func TestLoad(t *testing.T) {
 		}
 		if _, ok := s.Scheme("unknown"); ok {
 			t.Fatal("unknown scheme should not resolve")
+		}
+	})
+}
+
+func TestFieldKeyType(t *testing.T) {
+	t.Run("a seeded key reports its declared type; an unknown key reports absence", func(t *testing.T) {
+		path := storePath(t)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(seeded), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := s.FieldKeyType("weight-lb"); !ok || got != "number" {
+			t.Fatalf("FieldKeyType(weight-lb) = %q, %v, want number, true", got, ok)
+		}
+		if _, ok := s.FieldKeyType("unheard-of"); ok {
+			t.Fatal("an unknown key must report absence, not a default")
 		}
 	})
 }
