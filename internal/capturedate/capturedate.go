@@ -7,15 +7,19 @@ package capturedate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
+	"strings"
 	"time"
 )
 
-// File is one batch member with its resolved capture date. CaptureDate is
-// local wall-clock time carried in a fixed zone (UTC) — compare and format
-// it, never convert it.
+// File is one file of the run with its resolved capture date. CaptureDate
+// is local wall-clock time carried in a fixed zone (UTC) — compare and
+// format it, never convert it. A zero CaptureDate means nothing usable
+// came back at all; such files sort first, and the date field falls
+// through to today (#9).
 type File struct {
 	Path        string
 	CaptureDate time.Time
@@ -26,8 +30,8 @@ type File struct {
 // FileModifyDate (weak fallback — copies and syncs rewrite it).
 var tags = []string{"DateTimeOriginal", "CreateDate", "FileModifyDate"}
 
-// The same timestamp shape, spelled once for exiftool (strftime) and once
-// for Go's parser.
+// One date-time shape, spelled once for exiftool (strftime) and once for
+// Go's parser.
 const (
 	exiftoolFormat = "%Y-%m-%d %H:%M:%S"
 	layout         = "2006-01-02 15:04:05"
@@ -49,7 +53,20 @@ func Resolve(paths []string) ([]File, error) {
 
 	out, err := exec.Command("exiftool", args...).Output()
 	if err != nil {
-		return nil, fmt.Errorf("resolving capture dates with exiftool: %w", err)
+		// exiftool exits non-zero when any one file is unreadable while
+		// still emitting entries for the rest. A file-level problem must
+		// not end the run — the file is kept and dated by whatever came
+		// back (issue #7: fall back, never drop). Only a run-level failure
+		// — no parseable output at all — is fatal, and it carries
+		// exiftool's own words rather than a bare exit status.
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || !json.Valid(out) {
+			detail := ""
+			if exitErr != nil && len(exitErr.Stderr) > 0 {
+				detail = ": " + strings.TrimSpace(string(exitErr.Stderr))
+			}
+			return nil, fmt.Errorf("resolving capture dates with exiftool: %w%s", err, detail)
+		}
 	}
 
 	var records []map[string]string

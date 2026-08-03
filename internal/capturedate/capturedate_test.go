@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,13 @@ func requireExiftool(t *testing.T) {
 	if _, err := exec.LookPath("exiftool"); err != nil {
 		t.Skip("SKIPPING seam-2 capture-date tests: exiftool is not installed — install exiftool and re-run; these tests verify ADR-0010's timezone handling and must not stay skipped on a dev machine")
 	}
+}
+
+// pinLosAngeles fixes the zone exiftool converts QuickTime dates into, so
+// the fixtures' UTC video dates land on known local wall-clock times on
+// any machine.
+func pinLosAngeles(t *testing.T) {
+	t.Helper()
 	t.Setenv("TZ", "America/Los_Angeles")
 }
 
@@ -30,6 +38,7 @@ func fixture(name string) string { return filepath.Join("testdata", name) }
 func TestCaptureOrder(t *testing.T) {
 	t.Run("two devices interleave by capture date, not filename order", func(t *testing.T) {
 		requireExiftool(t)
+		pinLosAngeles(t)
 		// Filename order: still-morning (10:00), still-noon (12:00),
 		// video-late-morning (11:00 local, stored as 18:00 UTC). Capture
 		// order slots the video between the stills — which only happens
@@ -57,6 +66,7 @@ func TestCaptureOrder(t *testing.T) {
 func TestEveningSession(t *testing.T) {
 	t.Run("a still and a video from the same evening session agree on the date", func(t *testing.T) {
 		requireExiftool(t)
+		pinLosAngeles(t)
 		// The video's QuickTime CreateDate is 2026-06-29 03:00 UTC — 8pm on
 		// the 28th in Los Angeles. Without `-api QuickTimeUTC=1` it reads as
 		// the 29th and the session splits across two dates (ADR-0010).
@@ -97,6 +107,7 @@ func TestTagPriority(t *testing.T) {
 
 	t.Run("DateTimeOriginal beats CreateDate beats FileModifyDate", func(t *testing.T) {
 		requireExiftool(t)
+		pinLosAngeles(t)
 		// still-morning carries a decoy CreateDate of 2026-01-01, and both
 		// copies carry a decoy modify time of 2020-01-01.
 		still := decoyMtime(t, "still-morning.jpg")
@@ -118,6 +129,7 @@ func TestTagPriority(t *testing.T) {
 
 	t.Run("a file with no date tags falls back to FileModifyDate rather than being dropped", func(t *testing.T) {
 		requireExiftool(t)
+		pinLosAngeles(t)
 		src, err := os.ReadFile(fixture("no-tags.png"))
 		if err != nil {
 			t.Fatal(err)
@@ -141,6 +153,57 @@ func TestTagPriority(t *testing.T) {
 		want := time.Date(2026, 1, 2, 7, 4, 5, 0, time.UTC)
 		if !files[0].CaptureDate.Equal(want) {
 			t.Fatalf("capture date = %v, want the modify time %v", files[0].CaptureDate, want)
+		}
+	})
+}
+
+func TestPartialFailure(t *testing.T) {
+	t.Run("an unreadable file is kept rather than killing the batch", func(t *testing.T) {
+		requireExiftool(t)
+		pinLosAngeles(t)
+		// exiftool exits 1 when it cannot open a file, while still emitting
+		// entries for everything else. One bad file must not end the run —
+		// per issue #7 a file falls back rather than being dropped.
+		dir := t.TempDir()
+		src, err := os.ReadFile(fixture("still-morning.jpg"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		good := filepath.Join(dir, "good.jpg")
+		if err := os.WriteFile(good, src, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		locked := filepath.Join(dir, "locked.jpg")
+		if err := os.WriteFile(locked, []byte("x"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+
+		files, err := capturedate.Resolve([]string{good, locked})
+		if err != nil {
+			t.Fatalf("Resolve failed on a batch with one unreadable file: %v", err)
+		}
+		if len(files) != 2 {
+			t.Fatalf("Resolve returned %d files, want the unreadable file kept", len(files))
+		}
+		// The unreadable file has no usable date at all, so it sorts first;
+		// the good file keeps its real capture date.
+		if filepath.Base(files[0].Path) != "locked.jpg" || !files[0].CaptureDate.IsZero() {
+			t.Fatalf("files[0] = %v %v, want locked.jpg with a zero capture date", files[0].Path, files[0].CaptureDate)
+		}
+		if want := time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC); !files[1].CaptureDate.Equal(want) {
+			t.Fatalf("good.jpg resolved to %v, want %v", files[1].CaptureDate, want)
+		}
+	})
+
+	t.Run("a run-level exiftool failure surfaces exiftool's own message", func(t *testing.T) {
+		requireExiftool(t)
+		pinLosAngeles(t)
+		_, err := capturedate.Resolve([]string{filepath.Join(t.TempDir(), "vanished.jpg")})
+		if err == nil {
+			t.Fatal("want an error when exiftool produces nothing")
+		}
+		if !strings.Contains(err.Error(), "vanished.jpg") {
+			t.Fatalf("error %q does not carry exiftool's message naming the file", err)
 		}
 	})
 }

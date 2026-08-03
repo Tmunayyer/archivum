@@ -46,8 +46,9 @@ type Deps struct {
 	DestDir string
 }
 
-// File is one batch member: the source path and its resolved capture date
-// (seam 2, issue #7). The date field type offers the capture date first (#9).
+// File is one file of the run: the source path and its resolved capture
+// date (seam 2, issue #7). The date field type offers the capture date
+// first (#9).
 type File struct {
 	Path        string
 	CaptureDate time.Time

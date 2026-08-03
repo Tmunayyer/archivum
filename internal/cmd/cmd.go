@@ -104,16 +104,16 @@ func runBatch(srcDir, destDir, schemeName string) error {
 	if err != nil {
 		return err
 	}
-	batch := make([]run.File, len(resolved))
+	ordered := make([]run.File, len(resolved))
 	for i, f := range resolved {
-		batch[i] = run.File{Path: f.Path, CaptureDate: f.CaptureDate}
+		ordered[i] = run.File{Path: f.Path, CaptureDate: f.CaptureDate}
 	}
 
-	fmt.Printf("%d file(s) to label from %s\n", len(batch), srcDir)
+	fmt.Printf("%d file(s) to label from %s\n", len(ordered), srcDir)
 
 	// Inline on purpose: no alt-screen, so previews and progress lines
 	// scroll up into terminal history (ADR-0011).
-	model := run.New(batch, fields, run.Deps{
+	model := run.New(ordered, fields, run.Deps{
 		Store:   st,
 		Dest:    run.DirDest{Dir: destDir},
 		DestDir: destDir,
