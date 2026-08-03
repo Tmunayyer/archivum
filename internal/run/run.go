@@ -159,6 +159,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyRunes, tea.KeySpace, tea.KeyBackspace:
+			if msg.Type != tea.KeyBackspace && m.fields[m.fx].Type == Number && !numberAccepts(m.input.Value(), msg) {
+				m.note = "a number is digits with at most one decimal point"
+				return m, nil
+			}
 			m.rc = -1 // typing (or editing) leaves the list
 		}
 	case copiedMsg:
@@ -172,14 +176,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// numberAccepts reports whether typing msg into a number field holding
+// current keeps the grammar of ADR-0008: digits with at most one decimal
+// point, nothing else — rejection happens per keystroke, on the keystroke.
+func numberAccepts(current string, msg tea.KeyMsg) bool {
+	if msg.Type != tea.KeyRunes {
+		return false // space is the only other key routed here
+	}
+	dots := strings.Count(current, ".")
+	for _, r := range msg.Runes {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == '.':
+			dots++
+			if dots > 1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // confirmField takes the highlighted recent, or normalizes the free-form
 // entry; an entry that normalizes to nothing is refused, because a composed
 // name never has an empty segment (ADR-0008). The last field's confirmation
 // is what triggers the copy.
 func (m Model) confirmField() (tea.Model, tea.Cmd) {
 	value := normalize.Value(m.input.Value())
-	if m.rc >= 0 {
+	switch {
+	case m.rc >= 0:
 		value = m.recents[m.rc] // stored values are already normalized (ADR-0009)
+	case m.fields[m.fx].Type == Number:
+		// The grammar is enforced per keystroke, and normalizing would turn
+		// the decimal point into a dash — a number is taken as typed. A bare
+		// or trailing "." carries no digits and trims away.
+		value = strings.TrimSuffix(m.input.Value(), ".")
 	}
 	if value == "" {
 		m.note = "a value is required — this entry normalizes to nothing"

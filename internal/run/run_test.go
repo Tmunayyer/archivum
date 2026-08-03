@@ -479,6 +479,68 @@ func TestBackAField(t *testing.T) {
 	})
 }
 
+func TestNumberField(t *testing.T) {
+	weight := []run.Field{{Key: "weight-lb", Type: run.Number}}
+
+	t.Run("a letter is rejected as it is typed, with visible feedback", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New(sources("/src/a.mp4"), weight, run.Deps{Store: &fakeStore{}, Dest: dest})
+		m = drive(t, m, typed("1"), typed("a"))
+		if !strings.Contains(m.View(), "digit") {
+			t.Fatalf("View() = %q, want a visible rejection of the letter", m.View())
+		}
+		m = drive(t, m, typed("8"), enter)
+		if len(dest.copies) != 1 || dest.copies[0].name != "18.mp4" {
+			t.Fatalf("copies = %v, want 18.mp4 — the rejected letter must not enter the value", dest.copies)
+		}
+	})
+
+	t.Run("a second decimal point is rejected; the first composes as typed", func(t *testing.T) {
+		st := &fakeStore{}
+		dest := &fakeDest{}
+		m := run.New(sources("/src/a.mp4"), weight, run.Deps{Store: st, Dest: dest})
+		m = drive(t, m, typed("185.5"), typed("."))
+		if !strings.Contains(m.View(), "decimal") {
+			t.Fatalf("View() = %q, want a visible rejection of the second point", m.View())
+		}
+		m = drive(t, m, enter)
+		if len(dest.copies) != 1 || dest.copies[0].name != "185.5.mp4" {
+			t.Fatalf("copies = %v, want 185.5.mp4 — a number is stored as typed, never dash-normalized", dest.copies)
+		}
+		if len(st.recorded) != 1 || st.recorded[0] != [2]string{"weight-lb", "185.5"} {
+			t.Fatalf("recorded = %v, want the decimal recorded as typed", st.recorded)
+		}
+	})
+
+	t.Run("recents are offered and selectable like any field", func(t *testing.T) {
+		st := testStore(t)
+		for _, v := range []string{"135", "185"} {
+			st.RecordValue("weight-lb", v)
+		}
+		dest := &fakeDest{}
+		m := run.New(sources("/src/a.mp4"), weight, run.Deps{Store: st, Dest: dest})
+		assertOrder(t, m.View(), "185", "135")
+		drive(t, m, enter) // bare enter takes the top recent
+		if len(dest.copies) != 1 || dest.copies[0].name != "185.mp4" {
+			t.Fatalf("copies = %v, want 185.mp4 from a single keystroke", dest.copies)
+		}
+	})
+
+	t.Run("space is rejected", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New(sources("/src/a.mp4"), weight, run.Deps{Store: &fakeStore{}, Dest: dest})
+		space := tea.Msg(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+		m = drive(t, m, typed("18"), space)
+		if !strings.Contains(m.View(), "digit") {
+			t.Fatalf("View() = %q, want a visible rejection of the space", m.View())
+		}
+		drive(t, m, enter)
+		if len(dest.copies) != 1 || dest.copies[0].name != "18.mp4" {
+			t.Fatalf("copies = %v, want 18.mp4 with the space kept out", dest.copies)
+		}
+	})
+}
+
 func TestProgress(t *testing.T) {
 	t.Run("the prompt shows field position, total, and the values already given", func(t *testing.T) {
 		m := run.New(
