@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -45,6 +46,13 @@ type Deps struct {
 	DestDir string
 }
 
+// File is one batch member: the source path and its resolved capture date
+// (seam 2, issue #7). The date field type offers the capture date first (#9).
+type File struct {
+	Path        string
+	CaptureDate time.Time
+}
+
 type copiedMsg struct{ path string }
 
 type failedMsg struct{ err error }
@@ -52,7 +60,7 @@ type failedMsg struct{ err error }
 // Model prompts one field at a time across the batch. values always has
 // exactly one slot per scheme field — there is no absent value (ADR-0008).
 type Model struct {
-	files  []string
+	files  []File
 	fields []string
 	deps   Deps
 
@@ -69,9 +77,10 @@ type Model struct {
 	err    error
 }
 
-// New builds a model over the batch: files are full source paths in
-// processing order, fields the scheme's field keys in prompt order.
-func New(files, fields []string, deps Deps) Model {
+// New builds a model over the batch: files carry full source paths in
+// processing order (capture order, per ADR-0010), fields the scheme's
+// field keys in prompt order.
+func New(files []File, fields []string, deps Deps) Model {
 	ti := textinput.New()
 	ti.Prompt = "> "
 	ti.Cursor.SetMode(cursor.CursorStatic)
@@ -184,7 +193,7 @@ func (m Model) backField() Model {
 // resolve collisions, copy, record each value's recency, save the store.
 // Copy or save failure is fatal to the run (issue #4's failure policy).
 func (m Model) copyCurrent() tea.Cmd {
-	src := m.files[m.fi]
+	src := m.files[m.fi].Path
 	values := slices.Clone(m.values)
 	fields := m.fields
 	deps := m.deps
@@ -223,7 +232,7 @@ func (m Model) View() string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "file %d/%d — %s\n", m.fi+1, len(m.files), filepath.Base(m.files[m.fi]))
+	fmt.Fprintf(&b, "file %d/%d — %s\n", m.fi+1, len(m.files), filepath.Base(m.files[m.fi].Path))
 	for i := range m.fx {
 		fmt.Fprintf(&b, "  %s: %s\n", m.fields[i], m.values[i])
 	}
