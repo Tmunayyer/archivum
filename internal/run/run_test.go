@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Tmunayyer/archivum/internal/run"
+	"github.com/Tmunayyer/archivum/internal/store"
 )
 
 // --- fakes -----------------------------------------------------------------
@@ -27,9 +29,24 @@ func (s *fakeStore) RecordValue(key, value string) {
 	s.recorded = append(s.recorded, [2]string{key, value})
 }
 
+func (s *fakeStore) Recents(key string, n int) []string { return nil }
+
 func (s *fakeStore) Save() error {
 	s.saves++
 	return nil
+}
+
+// testStore is a real store on a temp path with a deterministic clock, so
+// recency tests exercise the actual reorder behaviour through the seam.
+func testStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Load(filepath.Join(t.TempDir(), "store.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick := time.Unix(1_700_000_000, 0)
+	st.Now = func() time.Time { tick = tick.Add(time.Second); return tick }
+	return st
 }
 
 type copyCall struct{ src, name string }
@@ -55,8 +72,11 @@ func (d *fakeDest) Copy(src, name string) error {
 func typed(s string) tea.Msg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 
 var (
-	enter = tea.Msg(tea.KeyMsg{Type: tea.KeyEnter})
-	ctrlC = tea.Msg(tea.KeyMsg{Type: tea.KeyCtrlC})
+	enter    = tea.Msg(tea.KeyMsg{Type: tea.KeyEnter})
+	ctrlC    = tea.Msg(tea.KeyMsg{Type: tea.KeyCtrlC})
+	up       = tea.Msg(tea.KeyMsg{Type: tea.KeyUp})
+	down     = tea.Msg(tea.KeyMsg{Type: tea.KeyDown})
+	shiftTab = tea.Msg(tea.KeyMsg{Type: tea.KeyShiftTab})
 )
 
 // answer types a value and confirms it.
@@ -255,6 +275,203 @@ func TestStoreDurability(t *testing.T) {
 		}
 		if m.Copied() != 1 {
 			t.Fatalf("Copied() = %d, want 1 to report at quit", m.Copied())
+		}
+	})
+}
+
+// assertOrder fails unless every substring appears in view, in the order given.
+func assertOrder(t *testing.T, view string, subs ...string) {
+	t.Helper()
+	last := -1
+	for _, s := range subs {
+		i := strings.Index(view, s)
+		if i < 0 {
+			t.Fatalf("View() = %q, missing %q", view, s)
+		}
+		if i < last {
+			t.Fatalf("View() = %q, want %v in this order", view, subs)
+		}
+		last = i
+	}
+}
+
+func TestRecents(t *testing.T) {
+	// seeded history for "movement", oldest first: dip is the most recent.
+	seed := func(t *testing.T) *store.Store {
+		st := testStore(t)
+		for _, v := range []string{"curl", "row", "squat", "dip"} {
+			st.RecordValue("movement", v)
+		}
+		return st
+	}
+
+	t.Run("a field with history lists the top three most-recent-first", func(t *testing.T) {
+		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: &fakeDest{}})
+		view := m.View()
+		assertOrder(t, view, "dip", "squat", "row")
+		if strings.Contains(view, "curl") {
+			t.Fatalf("View() = %q, want the fourth-most-recent value capped off the list", view)
+		}
+	})
+
+	t.Run("enter alone confirms the top recent", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		drive(t, m, enter)
+		if len(dest.copies) != 1 || dest.copies[0].name != "dip.mp4" {
+			t.Fatalf("copies = %v, want dip.mp4 from a single keystroke", dest.copies)
+		}
+	})
+
+	t.Run("arrows move the highlight and enter confirms it, clamping at the ends", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		drive(t, m, down, down, down, enter) // third down clamps at the last entry
+		if len(dest.copies) != 1 || dest.copies[0].name != "row.mp4" {
+			t.Fatalf("copies = %v, want row.mp4 (the third recent)", dest.copies)
+		}
+	})
+
+	t.Run("typing at any point leaves the list for free-form entry", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		drive(t, m, flatten([]tea.Msg{down}, answer("kick"))...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "kick.mp4" {
+			t.Fatalf("copies = %v, want kick.mp4 from free-form entry", dest.copies)
+		}
+	})
+
+	t.Run("arrowing up past the top returns to free-form entry", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		m = drive(t, m, up, enter)
+		if len(dest.copies) != 0 {
+			t.Fatalf("copies = %v, want none — enter above the list is an empty free-form entry", dest.copies)
+		}
+		if !strings.Contains(m.View(), "required") {
+			t.Fatalf("View() = %q, want the empty-entry rejection", m.View())
+		}
+	})
+
+	t.Run("backspace also leaves the list, editing the typed text", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: seed(t), Dest: dest})
+		backspace := tea.Msg(tea.KeyMsg{Type: tea.KeyBackspace})
+		drive(t, m, typed("xx"), down, backspace, enter)
+		if len(dest.copies) != 1 || dest.copies[0].name != "x.mp4" {
+			t.Fatalf("copies = %v, want x.mp4 — enter must confirm the edited text, not the highlight", dest.copies)
+		}
+	})
+
+	t.Run("a field with no history shows no list", func(t *testing.T) {
+		m := run.New([]string{"/src/a.mp4"}, []string{"movement"}, run.Deps{Store: &fakeStore{}, Dest: &fakeDest{}})
+		if strings.Contains(m.View(), "▸") {
+			t.Fatalf("View() = %q, want no recents list on an empty history", m.View())
+		}
+	})
+
+	t.Run("a typed value tops the list on the very next file", func(t *testing.T) {
+		st := testStore(t)
+		for _, v := range []string{"curl", "row"} {
+			st.RecordValue("movement", v)
+		}
+		m := run.New([]string{"/src/a.jpg", "/src/b.jpg"}, []string{"movement"}, run.Deps{Store: st, Dest: &fakeDest{}})
+		m = drive(t, m, flatten(answer("squat"))...)
+		assertOrder(t, m.View(), "▸ squat", "row", "curl")
+	})
+
+	t.Run("a selected value tops the list on the very next file", func(t *testing.T) {
+		st := testStore(t)
+		for _, v := range []string{"curl", "row", "squat"} {
+			st.RecordValue("movement", v)
+		}
+		m := run.New([]string{"/src/a.jpg", "/src/b.jpg"}, []string{"movement"}, run.Deps{Store: st, Dest: &fakeDest{}})
+		m = drive(t, m, down, enter) // select "row", the second recent
+		assertOrder(t, m.View(), "▸ row", "squat", "curl")
+	})
+
+	t.Run("recents are global per field key, shared across schemes", func(t *testing.T) {
+		st := testStore(t)
+		a := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb"}, run.Deps{Store: st, Dest: &fakeDest{}})
+		drive(t, a, flatten(answer("squat"), answer("185"))...)
+
+		b := run.New([]string{"/src/b.jpg"}, []string{"movement"}, run.Deps{Store: st, Dest: &fakeDest{}})
+		if !strings.Contains(b.View(), "▸ squat") {
+			t.Fatalf("View() = %q, want squat offered under a different scheme", b.View())
+		}
+	})
+}
+
+func TestBackAField(t *testing.T) {
+	t.Run("shift+tab pre-fills the previous answer editable with the cursor at the end", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb"}, run.Deps{Store: &fakeStore{}, Dest: dest})
+		drive(t, m, flatten(
+			answer("bench"),
+			[]tea.Msg{shiftTab, typed("-press"), enter}, // appending proves prefill and cursor-at-end
+			answer("185"),
+		)...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "bench-press_185.jpg" {
+			t.Fatalf("copies = %v, want bench-press_185.jpg after editing the earlier field", dest.copies)
+		}
+	})
+
+	t.Run("shift+tab on the first field is a no-op", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb"}, run.Deps{Store: &fakeStore{}, Dest: dest})
+		m = drive(t, m, shiftTab)
+		if !strings.Contains(m.View(), "movement (1/2)") {
+			t.Fatalf("View() = %q, want to stay on the first field", m.View())
+		}
+		drive(t, m, flatten(answer("squat"), answer("185"))...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "squat_185.jpg" {
+			t.Fatalf("copies = %v, want the run to proceed normally", dest.copies)
+		}
+	})
+
+	t.Run("re-advancing after going back keeps the later answers pre-filled", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb", "date"}, run.Deps{Store: &fakeStore{}, Dest: dest})
+		drive(t, m, flatten(
+			answer("one"), answer("two"),
+			[]tea.Msg{shiftTab, shiftTab}, // back to the first field
+			[]tea.Msg{enter, enter},       // re-confirm the pre-filled first and second answers
+			answer("three"),
+		)...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "one_two_three.jpg" {
+			t.Fatalf("copies = %v, want one_two_three.jpg — going back must not discard later answers", dest.copies)
+		}
+	})
+
+	t.Run("enter after going back confirms the pre-filled value, not a recent", func(t *testing.T) {
+		st := testStore(t)
+		st.RecordValue("movement", "row")
+		dest := &fakeDest{}
+		m := run.New([]string{"/src/a.jpg"}, []string{"movement", "weight-lb"}, run.Deps{Store: st, Dest: dest})
+		drive(t, m, flatten(
+			answer("bench"),
+			[]tea.Msg{shiftTab, enter}, // straight back and re-confirm
+			answer("185"),
+		)...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "bench_185.jpg" {
+			t.Fatalf("copies = %v, want the pre-filled bench, not the recent row", dest.copies)
+		}
+	})
+}
+
+func TestProgress(t *testing.T) {
+	t.Run("the prompt shows field position, total, and the values already given", func(t *testing.T) {
+		m := run.New(
+			[]string{"/src/a.jpg"},
+			[]string{"movement", "weight-lb", "date"},
+			run.Deps{Store: &fakeStore{}, Dest: &fakeDest{}},
+		)
+		m = drive(t, m, flatten(answer("squat"), answer("185"))...)
+		view := m.View()
+		for _, want := range []string{"file 1/1", "movement: squat", "weight-lb: 185", "date (3/3)"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("View() = %q, missing %q", view, want)
+			}
 		}
 	})
 }
