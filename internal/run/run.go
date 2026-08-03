@@ -40,11 +40,16 @@ type Dest interface {
 
 // Deps carries every side effect the model needs, injected whole so tests
 // can substitute fakes. DestDir is display-only, used in progress lines.
+// Now supplies "today" for date fields and defaults to time.Now.
 type Deps struct {
 	Store   Store
 	Dest    Dest
 	DestDir string
+	Now     func() time.Time
 }
+
+// dateLayout is the one accepted shape of a date value (ADR-0008).
+const dateLayout = "2006-01-02"
 
 // File is one file of the run: the source path and its resolved capture
 // date (seam 2, issue #7). The date field type offers the capture date
@@ -81,13 +86,14 @@ type Model struct {
 	fields []Field
 	deps   Deps
 
-	fi      int      // current file index
-	fx      int      // current field index
-	values  []string // one per scheme field
-	input   textinput.Model
-	recents []string // offered for the current field, most recent first
-	rc      int      // recents cursor; -1 is the free-form state (#4 prototype)
-	note    string   // rejection notice, cleared on the next keystroke
+	fi        int      // current file index
+	fx        int      // current field index
+	values    []string // one per scheme field
+	input     textinput.Model
+	offers    []string // the list for the current field: recents, or dates (#9)
+	offerTags []string // display-only annotation per offer; nil for recents
+	rc        int      // offer cursor; -1 is the free-form state (#4 prototype)
+	note      string   // rejection notice, cleared on the next keystroke
 
 	copied int
 	done   bool
@@ -102,6 +108,9 @@ func New(files []File, fields []Field, deps Deps) Model {
 	ti.Prompt = "> "
 	ti.Cursor.SetMode(cursor.CursorStatic)
 	ti.Focus()
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
 	m := Model{
 		files:  files,
 		fields: fields,
@@ -112,20 +121,41 @@ func New(files []File, fields []Field, deps Deps) Model {
 	return m.enterField("")
 }
 
-// enterField readies the prompt for the current field: fresh recents from
-// the store, the input holding prefill (the earlier answer when stepping
-// back), cursor at its end. The recents cursor starts on the top recent so
-// repeating a value is a bare enter; a prefill or an empty history starts
-// free-form.
+// enterField readies the prompt for the current field: the offer list —
+// recents from the store, or capture date and today for a date field — and
+// the input holding prefill (the earlier answer when stepping back), cursor
+// at its end. The cursor starts on the top offer so the common case is a
+// bare enter; a prefill or an empty list starts free-form.
 func (m Model) enterField(prefill string) Model {
-	m.recents = m.deps.Store.Recents(m.fields[m.fx].Key, maxRecents)
+	if m.fields[m.fx].Type == Date {
+		m.offers, m.offerTags = dateOffers(m.files[m.fi].CaptureDate, m.deps.Now())
+	} else {
+		m.offers = m.deps.Store.Recents(m.fields[m.fx].Key, maxRecents)
+		m.offerTags = nil
+	}
 	m.input.SetValue(prefill)
 	m.input.CursorEnd()
 	m.rc = 0
-	if prefill != "" || len(m.recents) == 0 {
+	if prefill != "" || len(m.offers) == 0 {
 		m.rc = -1
 	}
 	return m
+}
+
+// dateOffers is the date field's list: the file's capture date first, today
+// second (ADR-0008) — one entry when they agree or the capture date is
+// missing (a zero capture date falls through to today, per seam 2).
+func dateOffers(capture, now time.Time) (offers, tags []string) {
+	today := now.Format(dateLayout)
+	if !capture.IsZero() {
+		day := capture.Format(dateLayout)
+		offers = append(offers, day)
+		tags = append(tags, "capture date")
+		if day == today {
+			return offers, tags
+		}
+	}
+	return append(offers, today), append(tags, "today")
 }
 
 // Copied reports how many files have been copied so far; it is what the
@@ -154,7 +184,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyDown:
-			if m.rc < len(m.recents)-1 {
+			if m.rc < len(m.offers)-1 {
 				m.rc++
 			}
 			return m, nil
@@ -207,12 +237,19 @@ func (m Model) confirmField() (tea.Model, tea.Cmd) {
 	value := normalize.Value(m.input.Value())
 	switch {
 	case m.rc >= 0:
-		value = m.recents[m.rc] // stored values are already normalized (ADR-0009)
+		value = m.offers[m.rc] // stored values are already normalized (ADR-0009)
 	case m.fields[m.fx].Type == Number:
 		// The grammar is enforced per keystroke, and normalizing would turn
 		// the decimal point into a dash — a number is taken as typed. A bare
 		// or trailing "." carries no digits and trims away.
 		value = strings.TrimSuffix(m.input.Value(), ".")
+	case m.fields[m.fx].Type == Date && value != "":
+		// The shape cannot be judged mid-entry, so a free-form date is
+		// validated here, on the normalized form (ADR-0008).
+		if _, err := time.Parse(dateLayout, value); err != nil {
+			m.note = "a date must be YYYY-MM-DD"
+			return m, nil
+		}
 	}
 	if value == "" {
 		m.note = "a value is required — this entry normalizes to nothing"
@@ -287,19 +324,27 @@ func (m Model) View() string {
 		fmt.Fprintf(&b, "  %s: %s\n", m.fields[i].Key, m.values[i])
 	}
 	fmt.Fprintf(&b, "%s (%d/%d) %s\n", m.fields[m.fx].Key, m.fx+1, len(m.fields), m.input.View())
-	for i, r := range m.recents {
+	for i, offer := range m.offers {
 		marker := "  "
 		if i == m.rc {
 			marker = "▸ "
 		}
-		fmt.Fprintf(&b, "  %s%s\n", marker, r)
+		tag := ""
+		if m.offerTags != nil {
+			tag = " · " + m.offerTags[i]
+		}
+		fmt.Fprintf(&b, "  %s%s%s\n", marker, offer, tag)
 	}
 	if m.note != "" {
 		b.WriteString(m.note + "\n")
 	}
 	help := "enter confirm · shift+tab back · ctrl+c quit"
-	if len(m.recents) > 0 {
-		help = "↑↓ recents · " + help
+	if len(m.offers) > 0 {
+		list := "recents"
+		if m.fields[m.fx].Type == Date {
+			list = "dates"
+		}
+		help = "↑↓ " + list + " · " + help
 	}
 	b.WriteString(help)
 	return b.String()

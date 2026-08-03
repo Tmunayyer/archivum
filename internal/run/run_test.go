@@ -541,6 +541,88 @@ func TestNumberField(t *testing.T) {
 	})
 }
 
+func TestDateField(t *testing.T) {
+	date := []run.Field{{Key: "date", Type: run.Date}}
+	// Capture dates arrive as local wall-clock in a fixed zone (seam 2) —
+	// an evening time must offer as its own day, not the next.
+	shot := time.Date(2026, 6, 28, 20, 15, 0, 0, time.UTC)
+	today := func() time.Time { return time.Date(2026, 8, 2, 9, 0, 0, 0, time.UTC) }
+	file := func(d time.Time) []run.File { return []run.File{{Path: "/src/a.mp4", CaptureDate: d}} }
+
+	t.Run("capture date is offered first, today second; bare enter takes capture", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New(file(shot), date, run.Deps{Store: &fakeStore{}, Dest: dest, Now: today})
+		assertOrder(t, m.View(), "2026-06-28", "capture", "2026-08-02", "today")
+		drive(t, m, enter)
+		if len(dest.copies) != 1 || dest.copies[0].name != "2026-06-28.mp4" {
+			t.Fatalf("copies = %v, want the capture date from a single keystroke", dest.copies)
+		}
+	})
+
+	t.Run("one keystroke down selects today", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New(file(shot), date, run.Deps{Store: &fakeStore{}, Dest: dest, Now: today})
+		drive(t, m, down, enter)
+		if len(dest.copies) != 1 || dest.copies[0].name != "2026-08-02.mp4" {
+			t.Fatalf("copies = %v, want today from down+enter", dest.copies)
+		}
+	})
+
+	t.Run("free-form entry is rejected on confirm unless it is YYYY-MM-DD", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New(file(shot), date, run.Deps{Store: &fakeStore{}, Dest: dest, Now: today})
+		m = drive(t, m, flatten(answer("june 28"))...)
+		if len(dest.copies) != 0 {
+			t.Fatalf("copies = %v, want a malformed date refused on confirm", dest.copies)
+		}
+		if !strings.Contains(m.View(), "YYYY-MM-DD") {
+			t.Fatalf("View() = %q, want a visible rejection naming the shape", m.View())
+		}
+	})
+
+	t.Run("a valid free-form date is accepted and recorded in the store", func(t *testing.T) {
+		st := &fakeStore{}
+		dest := &fakeDest{}
+		m := run.New(file(shot), date, run.Deps{Store: st, Dest: dest, Now: today})
+		drive(t, m, flatten(answer("2026-12-25"))...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "2026-12-25.mp4" {
+			t.Fatalf("copies = %v, want the typed date", dest.copies)
+		}
+		if len(st.recorded) != 1 || st.recorded[0] != [2]string{"date", "2026-12-25"} {
+			t.Fatalf("recorded = %v, want the confirmed date recorded like any value", st.recorded)
+		}
+	})
+
+	t.Run("history is never offered on a date field", func(t *testing.T) {
+		st := testStore(t)
+		st.RecordValue("date", "2025-01-01")
+		m := run.New(file(shot), date, run.Deps{Store: st, Dest: &fakeDest{}, Now: today})
+		if strings.Contains(m.View(), "2025-01-01") {
+			t.Fatalf("View() = %q, want no recents on a date field", m.View())
+		}
+	})
+
+	t.Run("a zero capture date offers only today", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New(file(time.Time{}), date, run.Deps{Store: &fakeStore{}, Dest: dest, Now: today})
+		if strings.Contains(m.View(), "capture") {
+			t.Fatalf("View() = %q, want no capture offer without a capture date", m.View())
+		}
+		drive(t, m, enter)
+		if len(dest.copies) != 1 || dest.copies[0].name != "2026-08-02.mp4" {
+			t.Fatalf("copies = %v, want today as the one-keystroke answer", dest.copies)
+		}
+	})
+
+	t.Run("capture date equal to today is offered once", func(t *testing.T) {
+		shotToday := time.Date(2026, 8, 2, 7, 30, 0, 0, time.UTC)
+		m := run.New(file(shotToday), date, run.Deps{Store: &fakeStore{}, Dest: &fakeDest{}, Now: today})
+		if got := strings.Count(m.View(), "2026-08-02"); got != 1 {
+			t.Fatalf("View() = %q, want the shared date listed once, got %d", m.View(), got)
+		}
+	})
+}
+
 func TestProgress(t *testing.T) {
 	t.Run("the prompt shows field position, total, and the values already given", func(t *testing.T) {
 		m := run.New(
