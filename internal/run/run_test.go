@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,21 @@ func (d *fakeDest) Copy(src, name string) error {
 	return nil
 }
 
+// fakePreviewer hands back a recognizable stand-in payload per file and
+// records what it was asked to render, in order.
+type fakePreviewer struct {
+	calls []string
+	err   error
+}
+
+func (p *fakePreviewer) Preview(path string) (string, error) {
+	p.calls = append(p.calls, path)
+	if p.err != nil {
+		return "", p.err
+	}
+	return "PAYLOAD[" + filepath.Base(path) + "]", nil
+}
+
 // sources wraps bare source paths as run.Files; capture dates stay zero —
 // only the date field type reads them (#9).
 func sources(paths ...string) []run.File {
@@ -115,19 +131,37 @@ func flatten(groups ...[]tea.Msg) []tea.Msg {
 // Tea runtime would.
 func drive(t *testing.T, m run.Model, msgs ...tea.Msg) run.Model {
 	t.Helper()
-	for _, msg := range msgs {
-		m = deliver(t, m, msg)
-	}
+	m, _ = record(t, m, msgs...)
 	return m
 }
 
-func deliver(t *testing.T, m run.Model, msg tea.Msg) run.Model {
+// record drives msgs and also returns the lines pushed above the view via
+// tea.Println — the channel previews and write reports ride (ADR-0011).
+func record(t *testing.T, m run.Model, msgs ...tea.Msg) (run.Model, []string) {
 	t.Helper()
-	next, cmd := m.Update(msg)
-	return execute(t, next.(run.Model), cmd)
+	var printed []string
+	for _, msg := range msgs {
+		m = deliver(t, m, msg, &printed)
+	}
+	return m, printed
 }
 
-func execute(t *testing.T, m run.Model, cmd tea.Cmd) run.Model {
+// start executes Init the way the runtime would on startup, returning the
+// lines printed above the first prompt.
+func start(t *testing.T, m run.Model) (run.Model, []string) {
+	t.Helper()
+	var printed []string
+	m = execute(t, m, m.Init(), &printed)
+	return m, printed
+}
+
+func deliver(t *testing.T, m run.Model, msg tea.Msg, printed *[]string) run.Model {
+	t.Helper()
+	next, cmd := m.Update(msg)
+	return execute(t, next.(run.Model), cmd, printed)
+}
+
+func execute(t *testing.T, m run.Model, cmd tea.Cmd, printed *[]string) run.Model {
 	t.Helper()
 	if cmd == nil {
 		return m
@@ -139,13 +173,49 @@ func execute(t *testing.T, m run.Model, cmd tea.Cmd) run.Model {
 	switch msg := msg.(type) {
 	case tea.BatchMsg:
 		for _, c := range msg {
-			m = execute(t, m, c)
+			m = execute(t, m, c, printed)
 		}
 		return m
 	case tea.QuitMsg:
 		return m
 	}
-	return deliver(t, m, msg)
+	if cmds, ok := sequenced(msg); ok {
+		for _, c := range cmds {
+			m = execute(t, m, c, printed)
+		}
+		return m
+	}
+	if line, ok := printLine(msg); ok {
+		*printed = append(*printed, line)
+		return m
+	}
+	return deliver(t, m, msg, printed)
+}
+
+// sequenced unpacks bubbletea's unexported sequenceMsg ([]tea.Cmd), which
+// the runtime executes strictly in order. Recognized reflectively by type
+// name, the only handle an external test has on it.
+func sequenced(msg tea.Msg) ([]tea.Cmd, bool) {
+	v := reflect.ValueOf(msg)
+	if v.Kind() != reflect.Slice || v.Type().Name() != "sequenceMsg" {
+		return nil, false
+	}
+	cmds := make([]tea.Cmd, v.Len())
+	for i := range cmds {
+		cmds[i] = v.Index(i).Interface().(tea.Cmd)
+	}
+	return cmds, true
+}
+
+// printLine reads bubbletea's unexported printLineMessage, the message
+// tea.Println resolves to — the renderer consumes it, so the driver does too
+// rather than feeding it back through Update.
+func printLine(msg tea.Msg) (string, bool) {
+	v := reflect.ValueOf(msg)
+	if v.Kind() != reflect.Struct || v.Type().Name() != "printLineMessage" {
+		return "", false
+	}
+	return v.Field(0).String(), true
 }
 
 // --- tests -------------------------------------------------------------------
@@ -643,6 +713,86 @@ func TestDateField(t *testing.T) {
 		m := run.New(file(shotToday), date, run.Deps{Store: &fakeStore{}, Dest: &fakeDest{}, Now: today})
 		if got := strings.Count(m.View(), "2026-08-02"); got != 1 {
 			t.Fatalf("View() = %q, want the shared date listed once, got %d", m.View(), got)
+		}
+	})
+}
+
+func TestPreviews(t *testing.T) {
+	t.Run("startup emits the first file's preview, and the prompt still asks its field", func(t *testing.T) {
+		p := &fakePreviewer{}
+		m := run.New(sources("/src/a.jpg", "/src/b.jpg"), labels("movement"),
+			run.Deps{Store: &fakeStore{}, Dest: &fakeDest{}, Preview: p})
+		m, printed := start(t, m)
+		if len(printed) != 1 || printed[0] != "PAYLOAD[a.jpg]" {
+			t.Fatalf("printed = %q, want the first file's payload above the prompt", printed)
+		}
+		if !strings.Contains(m.View(), "movement") {
+			t.Fatalf("View() = %q, want the first field prompted under the preview", m.View())
+		}
+	})
+
+	t.Run("a finished file reports its write, then the next file's preview, in that order", func(t *testing.T) {
+		p := &fakePreviewer{}
+		dest := &fakeDest{}
+		m := run.New(sources("/src/a.jpg", "/src/b.jpg"), labels("movement"),
+			run.Deps{Store: &fakeStore{}, Dest: dest, DestDir: "/dst", Preview: p})
+		m, _ = start(t, m)
+		_, printed := record(t, m, flatten(answer("squat"))...)
+		want := []string{"wrote /dst/squat.jpg", "PAYLOAD[b.jpg]"}
+		if len(printed) != 2 || printed[0] != want[0] || printed[1] != want[1] {
+			t.Fatalf("printed = %q, want %q", printed, want)
+		}
+		wantCalls := []string{"/src/a.jpg", "/src/b.jpg"}
+		if len(p.calls) != 2 || p.calls[0] != wantCalls[0] || p.calls[1] != wantCalls[1] {
+			t.Fatalf("previewed = %q, want each file once in batch order", p.calls)
+		}
+	})
+
+	t.Run("typing, recents navigation, and back-a-field never re-render the preview", func(t *testing.T) {
+		st := testStore(t)
+		st.RecordValue("movement", "squat")
+		p := &fakePreviewer{}
+		m := run.New(sources("/src/a.jpg"), labels("movement", "weight-lb"),
+			run.Deps{Store: st, Dest: &fakeDest{}, Preview: p})
+		m, _ = start(t, m)
+		m, printed := record(t, m, flatten(
+			[]tea.Msg{down, up, typed("bench"), enter},
+			[]tea.Msg{shiftTab, enter}, // back to movement and re-confirm
+			answer("185"),
+		)...)
+		if len(p.calls) != 1 {
+			t.Fatalf("previewed = %q, want exactly one render for the file", p.calls)
+		}
+		if len(printed) != 1 || !strings.HasPrefix(printed[0], "wrote ") {
+			t.Fatalf("printed = %q, want only the write report after the startup preview", printed)
+		}
+	})
+
+	t.Run("a preview failure prints the reason in its place and the file is still prompted", func(t *testing.T) {
+		p := &fakePreviewer{err: errors.New("ffprobe: no duration")}
+		dest := &fakeDest{}
+		m := run.New(sources("/src/a.jpg"), labels("movement"),
+			run.Deps{Store: &fakeStore{}, Dest: dest, Preview: p})
+		m, printed := start(t, m)
+		if len(printed) != 1 || !strings.Contains(printed[0], "a.jpg") || !strings.Contains(printed[0], "no duration") {
+			t.Fatalf("printed = %q, want the reason naming the file", printed)
+		}
+		drive(t, m, flatten(answer("squat"))...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "squat.jpg" {
+			t.Fatalf("copies = %v, want the unpreviewable file still labeled and copied", dest.copies)
+		}
+	})
+
+	t.Run("a run without a previewer emits nothing and still works", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New(sources("/src/a.jpg"), labels("movement"), run.Deps{Store: &fakeStore{}, Dest: dest})
+		m, printed := start(t, m)
+		if len(printed) != 0 {
+			t.Fatalf("printed = %q, want nothing without a previewer", printed)
+		}
+		drive(t, m, flatten(answer("squat"))...)
+		if len(dest.copies) != 1 {
+			t.Fatalf("copies = %v, want the run unaffected", dest.copies)
 		}
 	})
 }

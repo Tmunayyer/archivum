@@ -38,14 +38,23 @@ type Dest interface {
 	Copy(srcPath, name string) error
 }
 
+// Previewer renders one source file into an inline payload — the Kitty
+// escape printed above the prompt (ADR-0011). What the payload holds
+// (image, three-frame strip) is the renderer's business, not the model's.
+type Previewer interface {
+	Preview(path string) (payload string, err error)
+}
+
 // Deps carries every side effect the model needs, injected whole so tests
 // can substitute fakes. DestDir is display-only, used in progress lines.
-// Now supplies "today" for date fields and defaults to time.Now.
+// Now supplies "today" for date fields and defaults to time.Now. Preview
+// is optional: nil emits no previews.
 type Deps struct {
 	Store   Store
 	Dest    Dest
 	DestDir string
 	Now     func() time.Time
+	Preview Previewer
 }
 
 // dateLayout is the one accepted shape of a date value (ADR-0008).
@@ -183,7 +192,28 @@ func (m Model) Copied() int { return m.copied }
 // Err is the failure that stopped the run, if any.
 func (m Model) Err() error { return m.err }
 
-func (m Model) Init() tea.Cmd { return nil }
+// Init emits the first file's preview; each later file's rides its
+// predecessor's advance (advanceFile).
+func (m Model) Init() tea.Cmd { return m.previewCurrent() }
+
+// previewCurrent returns the command rendering the current file's preview
+// and printing it above the prompt — tea.Println, never the view, and no
+// delete escape ever (ADR-0011). A failure prints its reason in the same
+// place: one unpreviewable file never ends the batch (#8).
+func (m Model) previewCurrent() tea.Cmd {
+	if m.deps.Preview == nil {
+		return nil
+	}
+	path := m.files[m.fi].Path
+	render := m.deps.Preview
+	return func() tea.Msg {
+		payload, err := render.Preview(path)
+		if err != nil {
+			return tea.Println(fmt.Sprintf("no preview for %s: %v", filepath.Base(path), err))()
+		}
+		return tea.Println(payload)()
+	}
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -318,7 +348,9 @@ func (m Model) copyCurrent() tea.Cmd {
 }
 
 // advanceFile reports the write into scrollback (tea.Println, per
-// ADR-0011) and moves to the next file or ends the run.
+// ADR-0011) and moves to the next file or ends the run. The next file's
+// preview is sequenced after the report, so the scrollback reads: preview,
+// values written, next preview.
 func (m Model) advanceFile(path string) (tea.Model, tea.Cmd) {
 	m.copied++
 	report := tea.Println("wrote " + path)
@@ -329,7 +361,8 @@ func (m Model) advanceFile(path string) (tea.Model, tea.Cmd) {
 	}
 	m.fx = 0
 	m.values = make([]string, len(m.fields))
-	return m.enterField(""), report
+	m = m.enterField("")
+	return m, tea.Sequence(report, m.previewCurrent())
 }
 
 func (m Model) View() string {
