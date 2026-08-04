@@ -10,10 +10,20 @@ import (
 	"strings"
 )
 
-var allowed = map[string]bool{
+var images = map[string]bool{
 	".jpg": true, ".jpeg": true, ".png": true, ".heic": true, ".heif": true,
 	".webp": true, ".gif": true,
+}
+
+var videos = map[string]bool{
 	".mov": true, ".mp4": true, ".m4v": true,
+}
+
+// IsVideo reports whether path names a video, by extension — the split that
+// decides whether a preview is the file itself or a three-frame strip
+// (ADR-0005).
+func IsVideo(path string) bool {
+	return videos[strings.ToLower(filepath.Ext(path))]
 }
 
 // List returns the full paths of eligible files directly inside dir, in
@@ -30,7 +40,8 @@ func List(dir string) ([]string, error) {
 		if e.IsDir() || strings.HasPrefix(name, ".") {
 			continue
 		}
-		if !allowed[strings.ToLower(filepath.Ext(name))] {
+		ext := strings.ToLower(filepath.Ext(name))
+		if !images[ext] && !videos[ext] {
 			continue
 		}
 		files = append(files, filepath.Join(dir, name))

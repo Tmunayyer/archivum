@@ -99,3 +99,18 @@ func TestList(t *testing.T) {
 		}
 	})
 }
+
+func TestIsVideo(t *testing.T) {
+	t.Run("video extensions are videos case-insensitively, images and strangers are not", func(t *testing.T) {
+		for _, p := range []string{"/src/a.mov", "/src/b.MP4", "/src/c.m4v"} {
+			if !IsVideo(p) {
+				t.Fatalf("IsVideo(%q) = false, want true", p)
+			}
+		}
+		for _, p := range []string{"/src/a.jpg", "/src/b.HEIC", "/src/c.txt", "/src/noext"} {
+			if IsVideo(p) {
+				t.Fatalf("IsVideo(%q) = true, want false", p)
+			}
+		}
+	})
+}
