@@ -92,11 +92,9 @@ func runBatch(srcDir, destDir, schemeName string) error {
 		// label is the behaviour those keys have always had.
 		fieldType := run.Label
 		if declared, ok := st.FieldKeyType(key); ok {
-			switch declared {
-			case string(run.Label), string(run.Number), string(run.Date):
-				fieldType = run.FieldType(declared)
-			default:
-				return fmt.Errorf("field key %q in %s has unknown type %q — expected label, number, or date", key, path, declared)
+			fieldType, err = run.ParseFieldType(declared)
+			if err != nil {
+				return fmt.Errorf("field key %q in %s: %w", key, path, err)
 			}
 		}
 		fields[i] = run.Field{Key: key, Type: fieldType}

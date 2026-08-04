@@ -75,6 +75,23 @@ type Field struct {
 	Type FieldType
 }
 
+// ParseFieldType maps a stored type string onto a FieldType, so the one
+// place the vocabulary is defined is also the one place it is parsed.
+func ParseFieldType(s string) (FieldType, error) {
+	switch t := FieldType(s); t {
+	case Label, Number, Date:
+		return t, nil
+	}
+	return "", fmt.Errorf("unknown field type %q — expected label, number, or date", s)
+}
+
+// offer is one entry of the list shown above free-form entry: the value,
+// and for date fields a display-only tag naming where it came from.
+type offer struct {
+	value string
+	tag   string
+}
+
 type copiedMsg struct{ path string }
 
 type failedMsg struct{ err error }
@@ -86,14 +103,13 @@ type Model struct {
 	fields []Field
 	deps   Deps
 
-	fi        int      // current file index
-	fx        int      // current field index
-	values    []string // one per scheme field
-	input     textinput.Model
-	offers    []string // the list for the current field: recents, or dates (#9)
-	offerTags []string // display-only annotation per offer; nil for recents
-	rc        int      // offer cursor; -1 is the free-form state (#4 prototype)
-	note      string   // rejection notice, cleared on the next keystroke
+	fi     int      // current file index
+	fx     int      // current field index
+	values []string // one per scheme field
+	input  textinput.Model
+	offers []offer // the list for the current field: recents, or dates (#9)
+	rc     int     // offer cursor; -1 is the free-form state (#4 prototype)
+	note   string  // rejection notice, cleared on the next keystroke
 
 	copied int
 	done   bool
@@ -128,10 +144,13 @@ func New(files []File, fields []Field, deps Deps) Model {
 // bare enter; a prefill or an empty list starts free-form.
 func (m Model) enterField(prefill string) Model {
 	if m.fields[m.fx].Type == Date {
-		m.offers, m.offerTags = dateOffers(m.files[m.fi].CaptureDate, m.deps.Now())
+		m.offers = dateOffers(m.files[m.fi].CaptureDate, m.deps.Now())
 	} else {
-		m.offers = m.deps.Store.Recents(m.fields[m.fx].Key, maxRecents)
-		m.offerTags = nil
+		recents := m.deps.Store.Recents(m.fields[m.fx].Key, maxRecents)
+		m.offers = make([]offer, len(recents))
+		for i, r := range recents {
+			m.offers[i] = offer{value: r}
+		}
 	}
 	m.input.SetValue(prefill)
 	m.input.CursorEnd()
@@ -145,17 +164,16 @@ func (m Model) enterField(prefill string) Model {
 // dateOffers is the date field's list: the file's capture date first, today
 // second (ADR-0008) — one entry when they agree or the capture date is
 // missing (a zero capture date falls through to today, per seam 2).
-func dateOffers(capture, now time.Time) (offers, tags []string) {
-	today := now.Format(dateLayout)
-	if !capture.IsZero() {
-		day := capture.Format(dateLayout)
-		offers = append(offers, day)
-		tags = append(tags, "capture date")
-		if day == today {
-			return offers, tags
-		}
+func dateOffers(capture, now time.Time) []offer {
+	today := offer{value: now.Format(dateLayout), tag: "today"}
+	if capture.IsZero() {
+		return []offer{today}
 	}
-	return append(offers, today), append(tags, "today")
+	shot := offer{value: capture.Format(dateLayout), tag: "capture date"}
+	if shot.value == today.value {
+		return []offer{shot}
+	}
+	return []offer{shot, today}
 }
 
 // Copied reports how many files have been copied so far; it is what the
@@ -237,7 +255,7 @@ func (m Model) confirmField() (tea.Model, tea.Cmd) {
 	value := normalize.Value(m.input.Value())
 	switch {
 	case m.rc >= 0:
-		value = m.offers[m.rc] // stored values are already normalized (ADR-0009)
+		value = m.offers[m.rc].value // offered values are already canonical (ADR-0009)
 	case m.fields[m.fx].Type == Number:
 		// The grammar is enforced per keystroke, and normalizing would turn
 		// the decimal point into a dash — a number is taken as typed. A bare
@@ -324,16 +342,16 @@ func (m Model) View() string {
 		fmt.Fprintf(&b, "  %s: %s\n", m.fields[i].Key, m.values[i])
 	}
 	fmt.Fprintf(&b, "%s (%d/%d) %s\n", m.fields[m.fx].Key, m.fx+1, len(m.fields), m.input.View())
-	for i, offer := range m.offers {
+	for i, o := range m.offers {
 		marker := "  "
 		if i == m.rc {
 			marker = "▸ "
 		}
 		tag := ""
-		if m.offerTags != nil {
-			tag = " · " + m.offerTags[i]
+		if o.tag != "" {
+			tag = " · " + o.tag
 		}
-		fmt.Fprintf(&b, "  %s%s%s\n", marker, offer, tag)
+		fmt.Fprintf(&b, "  %s%s%s\n", marker, o.value, tag)
 	}
 	if m.note != "" {
 		b.WriteString(m.note + "\n")

@@ -13,6 +13,13 @@ Storing the normalized form makes duplicates impossible by construction rather t
 
 Letters are unicode-aware (Go's `unicode.IsLetter`), so accented characters survive rather than being mangled; macOS handles them in filenames without trouble.
 
+## Field-type boundaries (issue #9)
+
+The rule above is the label rule; the intent — one canonical stored form, duplicates impossible by construction — holds for every type, but the other two types reach that form differently:
+
+- **number** values are stored as typed, not passed through the rule: rule 3 would corrupt the decimal point (`185.5` → `185-5`). ADR-0008's per-keystroke grammar (digits, at most one decimal point) is the canonicalizer — no casing, spacing, or punctuation variant can exist to collapse. A trailing bare `.` is trimmed on confirm.
+- **date** free-form entry is validated *after* the rule, so separator variants of a real date (`2026/12/25`) collapse to the canonical `YYYY-MM-DD` and anything else is refused on confirm.
+
 There is no symbol-expansion table. `clean & jerk` normalizes to `clean-jerk`, not `clean-and-jerk` — to get the latter, type the word. An expansion table has no natural boundary (`&`→and invites `+`→plus, `@`→at, `%`→percent), and every entry is an arbitrary rule that has to be remembered and matched by whoever types the next value.
 
 ## Consequences

@@ -479,19 +479,34 @@ func TestBackAField(t *testing.T) {
 	})
 }
 
+func TestParseFieldType(t *testing.T) {
+	t.Run("the three declared types parse; anything else errors", func(t *testing.T) {
+		for _, s := range []string{"label", "number", "date"} {
+			if ft, err := run.ParseFieldType(s); err != nil || string(ft) != s {
+				t.Fatalf("ParseFieldType(%q) = %v, %v", s, ft, err)
+			}
+		}
+		if _, err := run.ParseFieldType("color"); err == nil {
+			t.Fatal("want an error for an undeclared type")
+		}
+	})
+}
+
 func TestNumberField(t *testing.T) {
 	weight := []run.Field{{Key: "weight-lb", Type: run.Number}}
 
-	t.Run("a letter is rejected as it is typed, with visible feedback", func(t *testing.T) {
+	t.Run("letters and symbols are rejected as they are typed, with visible feedback", func(t *testing.T) {
 		dest := &fakeDest{}
 		m := run.New(sources("/src/a.mp4"), weight, run.Deps{Store: &fakeStore{}, Dest: dest})
-		m = drive(t, m, typed("1"), typed("a"))
-		if !strings.Contains(m.View(), "digit") {
-			t.Fatalf("View() = %q, want a visible rejection of the letter", m.View())
+		for _, bad := range []string{"a", "-", "+"} {
+			m = drive(t, m, typed("1"), typed(bad))
+			if !strings.Contains(m.View(), "digit") {
+				t.Fatalf("View() = %q, want a visible rejection of %q", m.View(), bad)
+			}
 		}
 		m = drive(t, m, typed("8"), enter)
-		if len(dest.copies) != 1 || dest.copies[0].name != "18.mp4" {
-			t.Fatalf("copies = %v, want 18.mp4 — the rejected letter must not enter the value", dest.copies)
+		if len(dest.copies) != 1 || dest.copies[0].name != "1118.mp4" {
+			t.Fatalf("copies = %v, want 1118.mp4 — no rejected keystroke may enter the value", dest.copies)
 		}
 	})
 
@@ -590,6 +605,15 @@ func TestDateField(t *testing.T) {
 		}
 		if len(st.recorded) != 1 || st.recorded[0] != [2]string{"date", "2026-12-25"} {
 			t.Fatalf("recorded = %v, want the confirmed date recorded like any value", st.recorded)
+		}
+	})
+
+	t.Run("separator variants normalize to the canonical date and are accepted", func(t *testing.T) {
+		dest := &fakeDest{}
+		m := run.New(file(shot), date, run.Deps{Store: &fakeStore{}, Dest: dest, Now: today})
+		drive(t, m, flatten(answer("2026/12/25"))...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "2026-12-25.mp4" {
+			t.Fatalf("copies = %v, want the canonical form of a real date (ADR-0009)", dest.copies)
 		}
 	})
 
