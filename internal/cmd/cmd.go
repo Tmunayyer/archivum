@@ -10,13 +10,19 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/Tmunayyer/archivum/internal/capturedate"
+	"github.com/Tmunayyer/archivum/internal/preview"
 	"github.com/Tmunayyer/archivum/internal/run"
 	"github.com/Tmunayyer/archivum/internal/source"
 	"github.com/Tmunayyer/archivum/internal/store"
 )
+
+// stripRows is the band of terminal rows requested for each preview; chafa
+// may hand back fewer to keep aspect ratio (ADR-0011).
+const stripRows = 12
 
 var rootCmd = &cobra.Command{
 	Use:           "archivum",
@@ -52,6 +58,17 @@ func Execute() {
 	}
 }
 
+// previewCols is the width requested of chafa: the terminal's, less a
+// two-cell margin — the prototype's choice, as is the 100-column default
+// when stdout is not a measurable terminal (or too narrow for the margin
+// to leave anything).
+func previewCols() int {
+	if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil && w > 4 {
+		return w - 2
+	}
+	return 100
+}
+
 func storePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -62,16 +79,28 @@ func storePath() (string, error) {
 
 // preflight fails the run at startup when a required external tool is
 // missing, so the failure is one clear message rather than a mid-batch
-// surprise (issue #4's failure policy). ffmpeg/ffprobe/chafa join with #8.
-func preflight() error {
-	if _, err := exec.LookPath("exiftool"); err != nil {
-		return fmt.Errorf("exiftool is required to resolve capture dates but was not found on PATH — install it (e.g. `brew install exiftool`) and re-run")
+// surprise (issue #4's failure policy). tmux is refused outright: Kitty
+// escapes do not pass through it, so previews would fail silently
+// (ADR-0006). Parameterized on the lookups so tests need no real PATH.
+func preflight(lookPath func(string) (string, error), getenv func(string) string) error {
+	if getenv("TMUX") != "" {
+		return fmt.Errorf("refusing to start inside tmux — Kitty graphics escapes do not pass through it and previews would silently fail (ADR-0006); use a plain pane")
+	}
+	for _, tool := range []struct{ bin, job, pkg string }{
+		{"exiftool", "resolve capture dates", "exiftool"},
+		{"ffmpeg", "extract video preview frames", "ffmpeg"},
+		{"ffprobe", "read video durations", "ffmpeg"},
+		{"chafa", "render previews inline", "chafa"},
+	} {
+		if _, err := lookPath(tool.bin); err != nil {
+			return fmt.Errorf("%s is required to %s but was not found on PATH — install it (e.g. `brew install %s`) and re-run", tool.bin, tool.job, tool.pkg)
+		}
 	}
 	return nil
 }
 
 func runBatch(srcDir, destDir, schemeName string) error {
-	if err := preflight(); err != nil {
+	if err := preflight(exec.LookPath, os.Getenv); err != nil {
 		return err
 	}
 	path, err := storePath()
@@ -124,12 +153,21 @@ func runBatch(srcDir, destDir, schemeName string) error {
 
 	fmt.Printf("%d file(s) to label from %s\n", len(ordered), srcDir)
 
+	// Frames and strips are working files, gone when the run is; only the
+	// labeled copies persist.
+	scratch, err := os.MkdirTemp("", "archivum-preview-")
+	if err != nil {
+		return fmt.Errorf("creating preview scratch dir: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+
 	// Inline on purpose: no alt-screen, so previews and progress lines
 	// scroll up into terminal history (ADR-0011).
 	model := run.New(ordered, fields, run.Deps{
 		Store:   st,
 		Dest:    run.DirDest{Dir: destDir},
 		DestDir: destDir,
+		Preview: preview.Renderer{Dir: scratch, Cols: previewCols(), Rows: stripRows},
 	})
 	final, err := tea.NewProgram(model).Run()
 	if err != nil {
