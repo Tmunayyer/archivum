@@ -192,6 +192,22 @@ func execute(t *testing.T, m run.Model, cmd tea.Cmd, printed *[]string) run.Mode
 	return deliver(t, m, msg, printed)
 }
 
+// TestDriver pins the reflective matching below to bubbletea's actual
+// types: if an upgrade renames them, this fails loudly instead of the
+// driver silently dropping sequences and printed lines.
+func TestDriver(t *testing.T) {
+	t.Run("the driver still recognizes bubbletea's sequence and println messages", func(t *testing.T) {
+		// Two cmds on purpose: Sequence compacts a single cmd to itself
+		// and only wraps two or more in the sequenceMsg under test.
+		if _, ok := sequenced(tea.Sequence(tea.Quit, tea.Quit)()); !ok {
+			t.Fatal("tea.Sequence no longer yields the sequenceMsg the driver unpacks — update sequenced()")
+		}
+		if line, ok := printLine(tea.Println("x")()); !ok || line != "x" {
+			t.Fatal("tea.Println no longer yields the printLineMessage the driver reads — update printLine()")
+		}
+	})
+}
+
 // sequenced unpacks bubbletea's unexported sequenceMsg ([]tea.Cmd), which
 // the runtime executes strictly in order. Recognized reflectively by type
 // name, the only handle an external test has on it.

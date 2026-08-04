@@ -59,8 +59,9 @@ func Execute() {
 }
 
 // previewCols is the width requested of chafa: the terminal's, less a
-// margin (the prototype's choice), with a fallback when stdout is not a
-// terminal worth measuring.
+// two-cell margin — the prototype's choice, as is the 100-column default
+// when stdout is not a measurable terminal (or too narrow for the margin
+// to leave anything).
 func previewCols() int {
 	if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil && w > 4 {
 		return w - 2

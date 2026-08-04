@@ -38,13 +38,18 @@ func (r Renderer) Preview(path string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		img, err = Strip(frames, filepath.Join(r.Dir, base+"-strip.png"))
+		img, err = Strip(frames, filepath.Join(r.Dir, stem(path)+"-strip.png"))
 		if err != nil {
 			return "", err
 		}
 	}
 	return Kitty(img, r.Cols, r.Rows)
+}
+
+// stem is the filename without directory or extension — what a file's
+// working frames and strip are named after.
+func stem(path string) string {
+	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 }
 
 // Duration returns the video's length in seconds via ffprobe.
@@ -72,10 +77,9 @@ func Frames(videoPath, outDir string) ([]string, error) {
 		return nil, err
 	}
 
-	base := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
 	paths := make([]string, 0, len(Fractions))
 	for i, f := range Fractions {
-		dst := filepath.Join(outDir, fmt.Sprintf("%s-%02d.png", base, i))
+		dst := filepath.Join(outDir, fmt.Sprintf("%s-%02d.png", stem(videoPath), i))
 		cmd := exec.Command("ffmpeg",
 			"-y", "-v", "error",
 			"-ss", strconv.FormatFloat(dur*f, 'f', 3, 64),

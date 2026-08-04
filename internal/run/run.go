@@ -48,7 +48,8 @@ type Previewer interface {
 // Deps carries every side effect the model needs, injected whole so tests
 // can substitute fakes. DestDir is display-only, used in progress lines.
 // Now supplies "today" for date fields and defaults to time.Now. Preview
-// is optional: nil emits no previews.
+// is nil-able so seam tests can run without one; a real run always wires
+// a renderer (cmd).
 type Deps struct {
 	Store   Store
 	Dest    Dest
