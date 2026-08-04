@@ -75,6 +75,14 @@ func Load(path string) (*Store, error) {
 	return s, nil
 }
 
+// FieldKeyType returns the declared type of a field key. Absence means the
+// key was never created — the type lives on the key (ADR-0008), so the
+// caller decides what an undeclared key means.
+func (s *Store) FieldKeyType(key string) (string, bool) {
+	fk, ok := s.doc.FieldKeys[key]
+	return fk.Type, ok
+}
+
 // Scheme returns the ordered field keys of a named scheme.
 func (s *Store) Scheme(name string) ([]string, bool) {
 	keys, ok := s.doc.Schemes[name]

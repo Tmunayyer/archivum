@@ -23,11 +23,15 @@ The transformation applied to a value on entry, before it is stored — the stor
 _Avoid_: slugify, sanitize, clean
 
 **Field type**:
-A property of the field key, fixed when the key is created, that determines how its values are suggested and validated. One of **label**, **date**, or **number**. It does not change how values are stored.
+A property of the field key, fixed when the key is created, that determines how its values are suggested and validated. One of **label**, **date**, or **number**. Every type stores one canonical form; how a value reaches it differs by type (see ADR-0009).
 
 **Recents**:
 The three most-recently-used values for a field key, offered as one-keystroke choices before free-form entry.
 _Avoid_: suggestions, history, autocomplete
+
+**Offer list**:
+The one-keystroke choices shown above free-form entry for the current field — recents for label and number fields, capture date then today for date fields.
+_Avoid_: menu, options, picker
 
 **Composed name**:
 The filename built by joining a file's field values with underscores, preserving the original extension (`bench-press_185_2026-06-28.mp4`). Values already carry their internal dashes from normalization.
