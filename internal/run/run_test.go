@@ -1044,3 +1044,22 @@ func TestSchemeComposition(t *testing.T) {
 		}
 	})
 }
+
+func TestCompositionCorruptType(t *testing.T) {
+	t.Run("reusing a key whose declared type does not parse fails the run, never a silent label", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "store.json")
+		raw := `{"version":1,"fieldKeys":{"movement":{"type":"wat"}},"values":{},"schemes":{}}`
+		if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		st, err := store.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := run.NewComposing(sources("/src/a.jpg"), "sets", run.Deps{Store: st, Dest: &fakeDest{}})
+		m = drive(t, m, enter, enter) // accept the offer, select the corrupt key
+		if err := m.Err(); err == nil || !strings.Contains(err.Error(), "movement") {
+			t.Fatalf("Err() = %v, want a failure naming the corrupt key", err)
+		}
+	})
+}

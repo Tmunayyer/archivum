@@ -143,7 +143,7 @@ type Model struct {
 	fx     int      // current field index
 	values []string // one per scheme field
 	input  textinput.Model
-	offers []offer // the list for the current field: recents, or dates (#9)
+	offers []offer // the list for the current prompt: recents, dates (#9), or composition choices (#10)
 	rc     int     // offer cursor; -1 is the free-form state (#4 prototype)
 	note   string  // rejection notice, cleared on the next keystroke
 
@@ -279,15 +279,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyShiftTab:
 			return m.backField(), nil
 		case tea.KeyUp:
-			if m.rc > -1 {
-				m.rc--
-			}
-			return m, nil
+			return m.cursorUp(), nil
 		case tea.KeyDown:
-			if m.rc < len(m.offers)-1 {
-				m.rc++
-			}
-			return m, nil
+			return m.cursorDown(), nil
 		case tea.KeyRunes, tea.KeySpace, tea.KeyBackspace:
 			if msg.Type != tea.KeyBackspace && m.fields[m.fx].Type == Number && !numberAccepts(m.input.Value(), msg) {
 				m.note = "a number is digits with at most one decimal point"
@@ -306,6 +300,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// cursorUp and cursorDown move the offer cursor: up toward the free-form
+// state (-1), down the list.
+func (m Model) cursorUp() Model {
+	if m.rc > -1 {
+		m.rc--
+	}
+	return m
+}
+
+func (m Model) cursorDown() Model {
+	if m.rc < len(m.offers)-1 {
+		m.rc++
+	}
+	return m
 }
 
 // numberAccepts reports whether typing msg into a number field holding
@@ -404,15 +414,9 @@ func (m Model) updateComposing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.finishComposing()
 	case tea.KeyUp:
-		if m.rc > -1 {
-			m.rc--
-		}
-		return m, nil
+		return m.cursorUp(), nil
 	case tea.KeyDown:
-		if m.rc < len(m.offers)-1 {
-			m.rc++
-		}
-		return m, nil
+		return m.cursorDown(), nil
 	case tea.KeyRunes, tea.KeySpace, tea.KeyBackspace:
 		m.rc = -1
 	}
@@ -431,7 +435,13 @@ func (m Model) enterKeyPrompt() Model {
 		if m.drafted(key) {
 			continue
 		}
-		m.offers = append(m.offers, offer{value: key, tag: string(m.storedType(key))})
+		// The tag shows the declared type verbatim — display only; the
+		// authoritative parse happens on confirm (confirmKey).
+		tag := string(Label)
+		if declared, ok := m.deps.Store.FieldKeyType(key); ok {
+			tag = declared
+		}
+		m.offers = append(m.offers, offer{value: key, tag: tag})
 	}
 	m.input.SetValue("")
 	m.rc = 0
@@ -459,28 +469,33 @@ func (m Model) drafted(key string) bool {
 	return slices.ContainsFunc(m.draft, func(f Field) bool { return f.Key == key })
 }
 
-// storedType resolves an existing key's declared type. A key with no
-// parseable declaration — the hand-seeded store shape — is a label, the
-// behaviour undeclared keys have always had (cmd applies the same default).
-func (m Model) storedType(key string) FieldType {
-	if declared, ok := m.deps.Store.FieldKeyType(key); ok {
-		if t, err := ParseFieldType(declared); err == nil {
-			return t
-		}
+// storedType resolves an existing key's type. A key with no declaration —
+// the hand-seeded store shape — is a label, the behaviour those keys have
+// always had; a declaration that does not parse is an error, never a
+// silent label (cmd fails the same way at startup).
+func (m Model) storedType(key string) (FieldType, error) {
+	declared, ok := m.deps.Store.FieldKeyType(key)
+	if !ok {
+		return Label, nil
 	}
-	return Label
+	return ParseFieldType(declared)
 }
 
-// confirmKey takes the highlighted existing key, or normalizes the typed
-// name by the same rule values get (ADR-0009) — so "Weight LB" and
-// "weight-lb" cannot mint two keys. A key the store knows keeps its type
-// and is never asked again (ADR-0008); a new key goes on to the type
-// prompt.
-func (m Model) confirmKey() (tea.Model, tea.Cmd) {
-	key := normalize.Value(m.input.Value())
+// chosen is the confirmed entry of a composition prompt: the highlighted
+// offer — already canonical — or the normalized free-form input (ADR-0009).
+func (m Model) chosen() string {
 	if m.rc >= 0 {
-		key = m.offers[m.rc].value
+		return m.offers[m.rc].value
 	}
+	return normalize.Value(m.input.Value())
+}
+
+// confirmKey takes the chosen key name — normalized by the same rule
+// values get, so "Weight LB" and "weight-lb" cannot mint two keys. A key
+// the store knows keeps its type and is never asked again (ADR-0008); a
+// new key goes on to the type prompt.
+func (m Model) confirmKey() (tea.Model, tea.Cmd) {
+	key := m.chosen()
 	if key == "" {
 		m.note = "a field key name is required"
 		return m, nil
@@ -490,7 +505,11 @@ func (m Model) confirmKey() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if slices.Contains(m.deps.Store.FieldKeys(), key) {
-		m.draft = append(m.draft, Field{Key: key, Type: m.storedType(key)})
+		t, err := m.storedType(key)
+		if err != nil {
+			return m, func() tea.Msg { return failedMsg{fmt.Errorf("field key %q: %w", key, err)} }
+		}
+		m.draft = append(m.draft, Field{Key: key, Type: t})
 		return m.enterKeyPrompt(), nil
 	}
 	m.pendingKey = key
@@ -501,11 +520,7 @@ func (m Model) confirmKey() (tea.Model, tea.Cmd) {
 // confirmType fixes the pending key's type — permanent, and global to
 // every scheme that will ever use the key (ADR-0008).
 func (m Model) confirmType() (tea.Model, tea.Cmd) {
-	value := normalize.Value(m.input.Value())
-	if m.rc >= 0 {
-		value = m.offers[m.rc].value
-	}
-	t, err := ParseFieldType(value)
+	t, err := ParseFieldType(m.chosen())
 	if err != nil {
 		m.note = "choose label, number, or date"
 		return m, nil
