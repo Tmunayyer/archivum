@@ -32,6 +32,14 @@ func (s *fakeStore) RecordValue(key, value string) {
 
 func (s *fakeStore) Recents(key string, n int) []string { return nil }
 
+func (s *fakeStore) FieldKeys() []string { return nil }
+
+func (s *fakeStore) FieldKeyType(key string) (string, bool) { return "", false }
+
+func (s *fakeStore) PutFieldKey(key, fieldType string) {}
+
+func (s *fakeStore) PutScheme(name string, keys []string) {}
+
 func (s *fakeStore) Save() error {
 	s.saves++
 	return nil
@@ -113,6 +121,7 @@ var (
 	up       = tea.Msg(tea.KeyMsg{Type: tea.KeyUp})
 	down     = tea.Msg(tea.KeyMsg{Type: tea.KeyDown})
 	shiftTab = tea.Msg(tea.KeyMsg{Type: tea.KeyShiftTab})
+	esc      = tea.Msg(tea.KeyMsg{Type: tea.KeyEsc})
 )
 
 // answer types a value and confirms it.
@@ -846,6 +855,192 @@ func TestCopyFailure(t *testing.T) {
 		}
 		if st.saves != 0 {
 			t.Fatalf("saves = %d, want none after a failed copy", st.saves)
+		}
+	})
+}
+
+func TestSchemeComposition(t *testing.T) {
+	t.Run("an unknown scheme offers creation and proceeds into the file loop", func(t *testing.T) {
+		st := testStore(t)
+		dest := &fakeDest{}
+		pv := &fakePreviewer{}
+		m := run.NewComposing(
+			sources("/src/a.jpg"),
+			"lifting",
+			run.Deps{Store: st, Dest: dest, DestDir: "/dst", Preview: pv},
+		)
+
+		m, printed := start(t, m)
+		if len(printed) != 0 {
+			t.Fatalf("printed %v before composition, want the preview held until the file loop", printed)
+		}
+		view := m.View()
+		if !strings.Contains(view, "lifting") || !strings.Contains(view, "compose") {
+			t.Fatalf("View() = %q, want an offer to compose the unknown scheme", view)
+		}
+
+		m = drive(t, m, enter)                          // accept the offer
+		m = drive(t, m, flatten(answer("movement"))...) // a new key…
+		if !strings.Contains(m.View(), "is new") {
+			t.Fatalf("View() = %q, want the type prompt for a new key", m.View())
+		}
+		m = drive(t, m, enter)                           // …typed label (the top offer)
+		m = drive(t, m, flatten(answer("Weight LB"))...) // a new key, normalized on entry
+		m = drive(t, m, down, enter)                     // …typed number
+
+		m, printed = record(t, m, esc) // finish the scheme
+		if len(printed) != 2 {
+			t.Fatalf("printed = %v, want the scheme summary then the first preview", printed)
+		}
+		if !strings.Contains(printed[0], `scheme "lifting" saved: movement (label), weight-lb (number)`) {
+			t.Fatalf("printed[0] = %q, want the composed keys and types", printed[0])
+		}
+		if !strings.Contains(printed[1], "PAYLOAD[a.jpg]") {
+			t.Fatalf("printed[1] = %q, want the first file's preview after the summary", printed[1])
+		}
+
+		assertOrder(t, m.View(), "file 1/1", "movement") // composed order is prompt order
+		m = drive(t, m, flatten(answer("squat"), answer("185"))...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "squat_185.jpg" {
+			t.Fatalf("copies = %v, want squat_185.jpg from the composed scheme", dest.copies)
+		}
+
+		keys, ok := st.Scheme("lifting")
+		if !ok || len(keys) != 2 || keys[0] != "movement" || keys[1] != "weight-lb" {
+			t.Fatalf("Scheme(lifting) = %v, %v — want the composed keys in order", keys, ok)
+		}
+		if typ, ok := st.FieldKeyType("weight-lb"); !ok || typ != "number" {
+			t.Fatalf("FieldKeyType(weight-lb) = %q, %v — want number", typ, ok)
+		}
+	})
+
+	t.Run("an existing key is offered for reuse and never asks its type", func(t *testing.T) {
+		st := testStore(t)
+		st.PutFieldKey("movement", "label")
+		st.RecordValue("location", "garage") // hand-seeded shape: values, no declaration
+		m := run.NewComposing(sources("/src/a.jpg"), "sets", run.Deps{Store: st, Dest: &fakeDest{}})
+
+		m = drive(t, m, enter)
+		assertOrder(t, m.View(), "location", "movement") // both known keys offered, sorted
+		m = drive(t, m, down, enter)                     // select the offered movement
+		view := m.View()
+		if strings.Contains(view, "is new") {
+			t.Fatalf("View() = %q — an existing key must not ask its type", view)
+		}
+		if !strings.Contains(view, "field key 2") {
+			t.Fatalf("View() = %q, want the next key prompt straight away", view)
+		}
+		m = drive(t, m, enter) // reuse the hand-seeded location too (now the sole offer)
+		drive(t, m, esc)
+
+		keys, ok := st.Scheme("sets")
+		if !ok || len(keys) != 2 || keys[0] != "movement" || keys[1] != "location" {
+			t.Fatalf("Scheme(sets) = %v, %v", keys, ok)
+		}
+		if typ, ok := st.FieldKeyType("location"); !ok || typ != "label" {
+			t.Fatalf("FieldKeyType(location) = %q, %v — want the hand-seeded key declared label on save", typ, ok)
+		}
+	})
+
+	t.Run("a typed name normalizing to an existing key reuses it, type intact", func(t *testing.T) {
+		st := testStore(t)
+		st.PutFieldKey("weight-lb", "number")
+		dest := &fakeDest{}
+		m := run.NewComposing(sources("/src/a.jpg"), "sets", run.Deps{Store: st, Dest: dest})
+
+		m = drive(t, m, enter)
+		m = drive(t, m, flatten(answer("Weight LB"))...) // normalizes to the existing weight-lb
+		if strings.Contains(m.View(), "is new") {
+			t.Fatalf("View() = %q — Weight LB and weight-lb must be one key", m.View())
+		}
+		m = drive(t, m, esc)
+
+		m = drive(t, m, typed("abc")) // the reused key kept its number type
+		if !strings.Contains(m.View(), "number is digits") {
+			t.Fatalf("View() = %q, want the number grammar enforced on the reused key", m.View())
+		}
+		m = drive(t, m, flatten(answer("185"))...)
+		if len(dest.copies) != 1 || dest.copies[0].name != "185.jpg" {
+			t.Fatalf("copies = %v, want 185.jpg", dest.copies)
+		}
+	})
+
+	t.Run("a new key asks its type exactly once across compositions", func(t *testing.T) {
+		st := testStore(t)
+		deps := run.Deps{Store: st, Dest: &fakeDest{}}
+
+		first := run.NewComposing(sources("/src/a.jpg"), "one", deps)
+		first = drive(t, first, enter)
+		first = drive(t, first, flatten(answer("movement"))...)
+		if !strings.Contains(first.View(), "is new") {
+			t.Fatal("the first composition should ask the new key's type")
+		}
+		drive(t, first, enter, esc) // label; scheme one saved
+
+		second := run.NewComposing(sources("/src/b.jpg"), "two", deps)
+		second = drive(t, second, enter)
+		second = drive(t, second, flatten(answer("movement"))...)
+		if strings.Contains(second.View(), "is new") {
+			t.Fatal("a later composition must reuse the key without asking its type again")
+		}
+	})
+
+	t.Run("a date-typed key rides the composed scheme into the offer list", func(t *testing.T) {
+		st := testStore(t)
+		m := run.NewComposing(sources("/src/a.jpg"), "shots", run.Deps{
+			Store: st, Dest: &fakeDest{},
+			Now: func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) },
+		})
+		m = drive(t, m, enter)
+		m = drive(t, m, flatten(answer("shot-on"))...)
+		m = drive(t, m, down, down, enter) // date is the third type offered
+		m = drive(t, m, esc)
+		assertOrder(t, m.View(), "2026-08-05", "today")
+	})
+
+	t.Run("the scheme is saved the moment composition completes", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "store.json")
+		st, err := store.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := run.NewComposing(sources("/src/a.jpg"), "lifting", run.Deps{Store: st, Dest: &fakeDest{}})
+		m = drive(t, m, enter)
+		m = drive(t, m, flatten(answer("movement"))...)
+		m = drive(t, m, enter, esc)
+		drive(t, m, ctrlC) // quit before labeling anything
+
+		reloaded, err := store.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys, ok := reloaded.Scheme("lifting")
+		if !ok || len(keys) != 1 || keys[0] != "movement" {
+			t.Fatalf("Scheme(lifting) after reload = %v, %v — want it saved before any file was labeled", keys, ok)
+		}
+		if typ, ok := reloaded.FieldKeyType("movement"); !ok || typ != "label" {
+			t.Fatalf("FieldKeyType(movement) after reload = %q, %v", typ, ok)
+		}
+	})
+
+	t.Run("empty, duplicate, and zero-key finishes are refused", func(t *testing.T) {
+		st := testStore(t)
+		m := run.NewComposing(sources("/src/a.jpg"), "one", run.Deps{Store: st, Dest: &fakeDest{}})
+		m = drive(t, m, enter)
+
+		m = drive(t, m, esc) // nothing composed yet
+		if !strings.Contains(m.View(), "at least one") {
+			t.Fatalf("View() = %q, want the zero-key finish refused", m.View())
+		}
+		m = drive(t, m, enter) // empty key name
+		if !strings.Contains(m.View(), "required") {
+			t.Fatalf("View() = %q, want the empty key refused", m.View())
+		}
+		m = drive(t, m, flatten(answer("movement"))...)
+		m = drive(t, m, enter)                          // label
+		m = drive(t, m, flatten(answer("Movement"))...) // same key after normalization
+		if !strings.Contains(m.View(), "already") {
+			t.Fatalf("View() = %q, want the duplicate refused", m.View())
 		}
 	})
 }

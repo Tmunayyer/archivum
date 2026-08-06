@@ -21,11 +21,21 @@ import (
 )
 
 // Store is the slice of the store a run touches: recents read at each
-// field, recency recorded after each copy, persisted after each file.
+// field, recency recorded after each copy, persisted after each file —
+// and, when the named scheme is unknown, the reads and writes of the
+// composition flow (#10).
 type Store interface {
 	RecordValue(key, value string)
 	Recents(key string, n int) []string
 	Save() error
+
+	// Composition: every known key is offered for reuse (the namespace
+	// defence of ADR-0003), a finished scheme declares its new keys' types
+	// and records itself.
+	FieldKeys() []string
+	FieldKeyType(key string) (string, bool)
+	PutFieldKey(key, fieldType string)
+	PutScheme(name string, keys []string)
 }
 
 // maxRecents caps the offered list at the three most recent values (#6).
@@ -106,6 +116,22 @@ type copiedMsg struct{ path string }
 
 type failedMsg struct{ err error }
 
+// schemeSavedMsg reports the composed scheme persisted; the file loop
+// begins on receipt (#10).
+type schemeSavedMsg struct{}
+
+// phase is where the model is: the file loop (the zero value, where New
+// starts), or one of the scheme-composition steps an unknown scheme name
+// opens with (#10).
+type phase int
+
+const (
+	phaseFiles       phase = iota // prompting fields per file
+	phaseCreateOffer              // unknown scheme: offering to compose it
+	phaseKey                      // composing: naming the next field key
+	phaseType                     // composing: a new key needs its type
+)
+
 // Model prompts one field at a time across the batch. values always has
 // exactly one slot per scheme field — there is no absent value (ADR-0008).
 type Model struct {
@@ -121,6 +147,11 @@ type Model struct {
 	rc     int     // offer cursor; -1 is the free-form state (#4 prototype)
 	note   string  // rejection notice, cleared on the next keystroke
 
+	phase      phase
+	schemeName string  // the scheme under composition
+	draft      []Field // composed keys so far, in prompt order
+	pendingKey string  // a new key awaiting its type
+
 	copied int
 	done   bool
 	err    error
@@ -130,6 +161,23 @@ type Model struct {
 // processing order (capture order, per ADR-0010), fields the scheme's
 // field keys in prompt order, each with its type (ADR-0008).
 func New(files []File, fields []Field, deps Deps) Model {
+	m := newModel(files, deps)
+	m.fields = fields
+	m.values = make([]string, len(fields))
+	return m.enterField("")
+}
+
+// NewComposing builds a model for a scheme name the store does not know:
+// it opens by offering to compose the scheme and enters the file loop only
+// once composition completes and the scheme is saved (#10).
+func NewComposing(files []File, schemeName string, deps Deps) Model {
+	m := newModel(files, deps)
+	m.schemeName = schemeName
+	m.phase = phaseCreateOffer
+	return m
+}
+
+func newModel(files []File, deps Deps) Model {
 	ti := textinput.New()
 	ti.Prompt = "> "
 	ti.Cursor.SetMode(cursor.CursorStatic)
@@ -137,14 +185,7 @@ func New(files []File, fields []Field, deps Deps) Model {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	m := Model{
-		files:  files,
-		fields: fields,
-		deps:   deps,
-		values: make([]string, len(fields)),
-		input:  ti,
-	}
-	return m.enterField("")
+	return Model{files: files, deps: deps, input: ti}
 }
 
 // enterField readies the prompt for the current field: the offer list —
@@ -194,8 +235,14 @@ func (m Model) Copied() int { return m.copied }
 func (m Model) Err() error { return m.err }
 
 // Init emits the first file's preview; each later file's rides its
-// predecessor's advance (advanceFile).
-func (m Model) Init() tea.Cmd { return m.previewCurrent() }
+// predecessor's advance (advanceFile). While a scheme is being composed
+// the preview waits — it belongs to the file loop, not the composition.
+func (m Model) Init() tea.Cmd {
+	if m.phase != phaseFiles {
+		return nil
+	}
+	return m.previewCurrent()
+}
 
 // previewCurrent returns the command rendering the current file's preview
 // and printing it above the prompt — tea.Println, never the view, and no
@@ -220,9 +267,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		m.note = ""
-		switch msg.Type {
-		case tea.KeyCtrlC:
+		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
+		}
+		if m.phase != phaseFiles {
+			return m.updateComposing(msg)
+		}
+		switch msg.Type {
 		case tea.KeyEnter:
 			return m.confirmField()
 		case tea.KeyShiftTab:
@@ -244,6 +295,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.rc = -1 // typing (or editing) leaves the list
 		}
+	case schemeSavedMsg:
+		return m.beginFiles()
 	case copiedMsg:
 		return m.advanceFile(msg.path)
 	case failedMsg:
@@ -325,6 +378,194 @@ func (m Model) backField() Model {
 	return m.enterField(m.values[m.fx])
 }
 
+// updateComposing routes keys while a scheme is being composed (#10). The
+// offer list is the interaction recents established: ↑↓ move the cursor,
+// typing drops to free-form, enter confirms; esc finishes the scheme —
+// or, on the type prompt, abandons the pending key.
+func (m Model) updateComposing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.phase == phaseCreateOffer {
+		if msg.Type == tea.KeyEnter {
+			m.phase = phaseKey
+			return m.enterKeyPrompt(), nil
+		}
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyEnter:
+		if m.phase == phaseType {
+			return m.confirmType()
+		}
+		return m.confirmKey()
+	case tea.KeyEsc:
+		if m.phase == phaseType {
+			m.pendingKey = ""
+			m.phase = phaseKey
+			return m.enterKeyPrompt(), nil
+		}
+		return m.finishComposing()
+	case tea.KeyUp:
+		if m.rc > -1 {
+			m.rc--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.rc < len(m.offers)-1 {
+			m.rc++
+		}
+		return m, nil
+	case tea.KeyRunes, tea.KeySpace, tea.KeyBackspace:
+		m.rc = -1
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// enterKeyPrompt readies the next key name: every field key the store
+// knows is offered for reuse, tagged with its type — the namespace defence
+// of ADR-0003 — minus keys already in the draft. The cursor starts on the
+// top offer so reuse is the easy path; no offers starts free-form.
+func (m Model) enterKeyPrompt() Model {
+	m.offers = nil
+	for _, key := range m.deps.Store.FieldKeys() {
+		if m.drafted(key) {
+			continue
+		}
+		m.offers = append(m.offers, offer{value: key, tag: string(m.storedType(key))})
+	}
+	m.input.SetValue("")
+	m.rc = 0
+	if len(m.offers) == 0 {
+		m.rc = -1
+	}
+	return m
+}
+
+// enterTypePrompt readies the type choice for a new key: the three types
+// of ADR-0008, label first as the common case.
+func (m Model) enterTypePrompt() Model {
+	m.offers = []offer{
+		{value: string(Label), tag: "recents + free-form"},
+		{value: string(Number), tag: "digits, at most one decimal point"},
+		{value: string(Date), tag: "capture date, today, or YYYY-MM-DD"},
+	}
+	m.input.SetValue("")
+	m.rc = 0
+	return m
+}
+
+// drafted reports whether a key is already in the scheme under composition.
+func (m Model) drafted(key string) bool {
+	return slices.ContainsFunc(m.draft, func(f Field) bool { return f.Key == key })
+}
+
+// storedType resolves an existing key's declared type. A key with no
+// parseable declaration — the hand-seeded store shape — is a label, the
+// behaviour undeclared keys have always had (cmd applies the same default).
+func (m Model) storedType(key string) FieldType {
+	if declared, ok := m.deps.Store.FieldKeyType(key); ok {
+		if t, err := ParseFieldType(declared); err == nil {
+			return t
+		}
+	}
+	return Label
+}
+
+// confirmKey takes the highlighted existing key, or normalizes the typed
+// name by the same rule values get (ADR-0009) — so "Weight LB" and
+// "weight-lb" cannot mint two keys. A key the store knows keeps its type
+// and is never asked again (ADR-0008); a new key goes on to the type
+// prompt.
+func (m Model) confirmKey() (tea.Model, tea.Cmd) {
+	key := normalize.Value(m.input.Value())
+	if m.rc >= 0 {
+		key = m.offers[m.rc].value
+	}
+	if key == "" {
+		m.note = "a field key name is required"
+		return m, nil
+	}
+	if m.drafted(key) {
+		m.note = key + " is already in this scheme"
+		return m, nil
+	}
+	if slices.Contains(m.deps.Store.FieldKeys(), key) {
+		m.draft = append(m.draft, Field{Key: key, Type: m.storedType(key)})
+		return m.enterKeyPrompt(), nil
+	}
+	m.pendingKey = key
+	m.phase = phaseType
+	return m.enterTypePrompt(), nil
+}
+
+// confirmType fixes the pending key's type — permanent, and global to
+// every scheme that will ever use the key (ADR-0008).
+func (m Model) confirmType() (tea.Model, tea.Cmd) {
+	value := normalize.Value(m.input.Value())
+	if m.rc >= 0 {
+		value = m.offers[m.rc].value
+	}
+	t, err := ParseFieldType(value)
+	if err != nil {
+		m.note = "choose label, number, or date"
+		return m, nil
+	}
+	m.draft = append(m.draft, Field{Key: m.pendingKey, Type: t})
+	m.pendingKey = ""
+	m.phase = phaseKey
+	return m.enterKeyPrompt(), nil
+}
+
+// finishComposing closes the key loop: the draft becomes the scheme,
+// persisted before the first file is prompted (#10).
+func (m Model) finishComposing() (tea.Model, tea.Cmd) {
+	if len(m.draft) == 0 {
+		m.note = "a scheme needs at least one field key"
+		return m, nil
+	}
+	return m, m.saveScheme()
+}
+
+// saveScheme returns the command persisting the composed scheme: declare
+// each still-undeclared key's type, record the scheme, save — the moment
+// composition completes, not after the first file (#10). Save failure is
+// fatal to the run (issue #4's failure policy).
+func (m Model) saveScheme() tea.Cmd {
+	st := m.deps.Store
+	name := m.schemeName
+	fields := slices.Clone(m.draft)
+	return func() tea.Msg {
+		keys := make([]string, len(fields))
+		for i, f := range fields {
+			keys[i] = f.Key
+			if _, ok := st.FieldKeyType(f.Key); !ok {
+				st.PutFieldKey(f.Key, string(f.Type))
+			}
+		}
+		st.PutScheme(name, keys)
+		if err := st.Save(); err != nil {
+			return failedMsg{fmt.Errorf("saving scheme %s: %w", name, err)}
+		}
+		return schemeSavedMsg{}
+	}
+}
+
+// beginFiles enters the file loop with the freshly composed scheme,
+// printing its keys and types into scrollback first so the user sees what
+// they built before the first file is prompted (#10).
+func (m Model) beginFiles() (tea.Model, tea.Cmd) {
+	m.fields = m.draft
+	m.values = make([]string, len(m.fields))
+	m.phase = phaseFiles
+	parts := make([]string, len(m.fields))
+	for i, f := range m.fields {
+		parts[i] = fmt.Sprintf("%s (%s)", f.Key, f.Type)
+	}
+	summary := fmt.Sprintf("scheme %q saved: %s", m.schemeName, strings.Join(parts, ", "))
+	m = m.enterField("")
+	return m, tea.Sequence(tea.Println(summary), m.previewCurrent())
+}
+
 // copyCurrent returns the command performing the whole per-file write:
 // resolve collisions, copy, record each value's recency, save the store.
 // Copy or save failure is fatal to the run (issue #4's failure policy).
@@ -370,23 +611,16 @@ func (m Model) View() string {
 	if m.done || m.err != nil {
 		return ""
 	}
+	if m.phase != phaseFiles {
+		return m.composingView()
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "file %d/%d — %s\n", m.fi+1, len(m.files), filepath.Base(m.files[m.fi].Path))
 	for i := range m.fx {
 		fmt.Fprintf(&b, "  %s: %s\n", m.fields[i].Key, m.values[i])
 	}
 	fmt.Fprintf(&b, "%s (%d/%d) %s\n", m.fields[m.fx].Key, m.fx+1, len(m.fields), m.input.View())
-	for i, o := range m.offers {
-		marker := "  "
-		if i == m.rc {
-			marker = "▸ "
-		}
-		tag := ""
-		if o.tag != "" {
-			tag = " · " + o.tag
-		}
-		fmt.Fprintf(&b, "  %s%s%s\n", marker, o.value, tag)
-	}
+	m.writeOffers(&b)
 	if m.note != "" {
 		b.WriteString(m.note + "\n")
 	}
@@ -400,4 +634,54 @@ func (m Model) View() string {
 	}
 	b.WriteString(help)
 	return b.String()
+}
+
+// composingView is the scheme-composition screen: the draft so far, then
+// the current prompt — a key name with the store's keys offered for reuse,
+// or a new key's type (#10).
+func (m Model) composingView() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "new scheme %q\n", m.schemeName)
+	if m.phase == phaseCreateOffer {
+		b.WriteString("not in the store yet — compose it now, naming its field keys in prompt order\n")
+		b.WriteString("enter compose · ctrl+c quit")
+		return b.String()
+	}
+	for i, f := range m.draft {
+		fmt.Fprintf(&b, "  %d. %s (%s)\n", i+1, f.Key, f.Type)
+	}
+	if m.phase == phaseType {
+		fmt.Fprintf(&b, "%s is new — choose its type, fixed forever %s\n", m.pendingKey, m.input.View())
+	} else {
+		fmt.Fprintf(&b, "field key %d %s\n", len(m.draft)+1, m.input.View())
+	}
+	m.writeOffers(&b)
+	if m.note != "" {
+		b.WriteString(m.note + "\n")
+	}
+	if m.phase == phaseType {
+		b.WriteString("↑↓ types · enter confirm · esc back · ctrl+c quit")
+	} else {
+		help := "enter add · esc done · ctrl+c quit"
+		if len(m.offers) > 0 {
+			help = "↑↓ existing keys · " + help
+		}
+		b.WriteString(help)
+	}
+	return b.String()
+}
+
+// writeOffers renders the offer list under the prompt, cursor marked.
+func (m Model) writeOffers(b *strings.Builder) {
+	for i, o := range m.offers {
+		marker := "  "
+		if i == m.rc {
+			marker = "▸ "
+		}
+		tag := ""
+		if o.tag != "" {
+			tag = " · " + o.tag
+		}
+		fmt.Fprintf(b, "  %s%s%s\n", marker, o.value, tag)
+	}
 }

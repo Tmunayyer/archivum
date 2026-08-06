@@ -4,7 +4,7 @@
 **Goal**: `FieldKeys()` (union of declared/valued/scheme-referenced keys, sorted), `PutFieldKey`, `PutScheme` on `internal/store`.
 **Success Criteria**: round-trip through Save/Load; hand-seeded keys (values only) appear in FieldKeys.
 **Tests**: store unit tests.
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage 2: Composition phase on the run model (seam 1)
 **Goal**: `run.NewComposing(files, schemeName, deps)` — offer-creation prompt → key naming loop (existing keys offered, normalized, duplicates refused) → type asked once per new key → esc finishes → scheme saved via tea.Cmd → summary printed → file loop.
