@@ -10,7 +10,7 @@
 **Goal**: `run.NewComposing(files, schemeName, deps)` — offer-creation prompt → key naming loop (existing keys offered, normalized, duplicates refused) → type asked once per new key → esc finishes → scheme saved via tea.Cmd → summary printed → file loop.
 **Success Criteria**: acceptance criteria of #10 pass as keystroke tests.
 **Tests**: creation end-to-end into the file loop; key reuse (no type asked, incl. hand-seeded and normalize-matched); type asked exactly once across two compositions; saved scheme survives to a fresh Load; empty/duplicate/no-key refusals.
-**Status**: Not Started
+**Status**: Complete
 
 ## Stage 3: cmd wiring + docs
 **Goal**: unknown scheme routes to `NewComposing` instead of erroring; CLAUDE.md status updated.

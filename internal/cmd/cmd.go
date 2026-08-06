@@ -111,10 +111,9 @@ func runBatch(srcDir, destDir, schemeName string) error {
 	if err != nil {
 		return err
 	}
-	keys, ok := st.Scheme(schemeName)
-	if !ok {
-		return fmt.Errorf("scheme %q not found in %s — seed it by hand for now; inline scheme creation is a later ticket", schemeName, path)
-	}
+	// An unknown scheme is not an error: the TUI opens by offering to
+	// compose it inline (#10).
+	keys, known := st.Scheme(schemeName)
 	fields := make([]run.Field, len(keys))
 	for i, key := range keys {
 		// A key with no fieldKeys entry predates types (hand-seeded store);
@@ -163,12 +162,18 @@ func runBatch(srcDir, destDir, schemeName string) error {
 
 	// Inline on purpose: no alt-screen, so previews and progress lines
 	// scroll up into terminal history (ADR-0011).
-	model := run.New(ordered, fields, run.Deps{
+	deps := run.Deps{
 		Store:   st,
 		Dest:    run.DirDest{Dir: destDir},
 		DestDir: destDir,
 		Preview: preview.Renderer{Dir: scratch, Cols: previewCols(), Rows: stripRows},
-	})
+	}
+	var model run.Model
+	if known {
+		model = run.New(ordered, fields, deps)
+	} else {
+		model = run.NewComposing(ordered, schemeName, deps)
+	}
 	final, err := tea.NewProgram(model).Run()
 	if err != nil {
 		return err
