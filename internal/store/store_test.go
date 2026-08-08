@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +231,61 @@ func TestSave(t *testing.T) {
 		}
 		if len(doc.Schemes["lifting"]) != 2 {
 			t.Fatalf("schemes lost on round-trip: %+v", doc.Schemes)
+		}
+	})
+}
+
+func TestFieldKeys(t *testing.T) {
+	t.Run("lists declared, valued, and scheme-referenced keys once each, sorted", func(t *testing.T) {
+		s, err := Load(storePath(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.PutFieldKey("weight-lb", "number")
+		s.RecordValue("movement", "squat") // hand-seeded shape: values without a declaration
+		s.PutScheme("lifting", []string{"movement", "location"})
+
+		got := s.FieldKeys()
+		want := []string{"location", "movement", "weight-lb"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("FieldKeys() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a fresh store has no field keys", func(t *testing.T) {
+		s, err := Load(storePath(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := s.FieldKeys(); len(got) != 0 {
+			t.Fatalf("FieldKeys() = %v, want none", got)
+		}
+	})
+}
+
+func TestPutFieldKeyAndScheme(t *testing.T) {
+	t.Run("a put key and scheme survive Save and a fresh Load", func(t *testing.T) {
+		path := storePath(t)
+		s, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.PutFieldKey("weight-lb", "number")
+		s.PutScheme("lifting", []string{"movement", "weight-lb"})
+		if err := s.Save(); err != nil {
+			t.Fatal(err)
+		}
+
+		reloaded, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ, ok := reloaded.FieldKeyType("weight-lb"); !ok || typ != "number" {
+			t.Fatalf("FieldKeyType(weight-lb) = %q, %v — want number, true", typ, ok)
+		}
+		keys, ok := reloaded.Scheme("lifting")
+		if !ok || !slices.Equal(keys, []string{"movement", "weight-lb"}) {
+			t.Fatalf("Scheme(lifting) = %v, %v — want the composed order back", keys, ok)
 		}
 	})
 }

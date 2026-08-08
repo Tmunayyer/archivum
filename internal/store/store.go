@@ -89,6 +89,44 @@ func (s *Store) Scheme(name string) ([]string, bool) {
 	return keys, ok
 }
 
+// FieldKeys returns every field key the store knows — declared under
+// fieldKeys, holding values, or referenced by a scheme — sorted, once each.
+// The union matters: a hand-seeded store may hold values for a key that was
+// never declared, and offering that key back is the namespace defence of
+// ADR-0003.
+func (s *Store) FieldKeys() []string {
+	seen := map[string]bool{}
+	for key := range s.doc.FieldKeys {
+		seen[key] = true
+	}
+	for key := range s.doc.Values {
+		seen[key] = true
+	}
+	for _, keys := range s.doc.Schemes {
+		for _, key := range keys {
+			seen[key] = true
+		}
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// PutFieldKey declares a field key's type — fixed at creation and global
+// thereafter (ADR-0008). The store file is untouched until Save.
+func (s *Store) PutFieldKey(key, fieldType string) {
+	s.doc.FieldKeys[key] = fieldKey{Type: fieldType}
+}
+
+// PutScheme records a named scheme's ordered field keys. The store file is
+// untouched until Save.
+func (s *Store) PutScheme(name string, keys []string) {
+	s.doc.Schemes[name] = keys
+}
+
 // RecordValue records one confirmed use of an already-normalized value
 // under a field key, updating recency and count; a value seen before is
 // re-stamped, never duplicated. The store file is untouched until Save.
