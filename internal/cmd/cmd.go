@@ -99,6 +99,32 @@ func preflight(lookPath func(string) (string, error), getenv func(string) string
 	return nil
 }
 
+// schemeFields resolves a stored scheme into the typed fields the run model
+// prompts for. An unknown scheme is not an error: the TUI opens by offering
+// to compose it inline (#10). A known scheme with no field keys is (#23) —
+// composition refuses to save one, but a hand-edited store can hold it.
+func schemeFields(st *store.Store, schemeName, path string) ([]run.Field, bool, error) {
+	keys, known := st.Scheme(schemeName)
+	if known && len(keys) == 0 {
+		return nil, true, fmt.Errorf("scheme %q in %s has no field keys — add keys to it or delete it and re-run to compose it", schemeName, path)
+	}
+	fields := make([]run.Field, len(keys))
+	for i, key := range keys {
+		// A key with no fieldKeys entry predates types (hand-seeded store);
+		// label is the behaviour those keys have always had.
+		fieldType := run.Label
+		if declared, ok := st.FieldKeyType(key); ok {
+			var err error
+			fieldType, err = run.ParseFieldType(declared)
+			if err != nil {
+				return nil, true, fmt.Errorf("field key %q in %s: %w", key, path, err)
+			}
+		}
+		fields[i] = run.Field{Key: key, Type: fieldType}
+	}
+	return fields, known, nil
+}
+
 func runBatch(srcDir, destDir, schemeName string) error {
 	if err := preflight(exec.LookPath, os.Getenv); err != nil {
 		return err
@@ -111,21 +137,9 @@ func runBatch(srcDir, destDir, schemeName string) error {
 	if err != nil {
 		return err
 	}
-	// An unknown scheme is not an error: the TUI opens by offering to
-	// compose it inline (#10).
-	keys, known := st.Scheme(schemeName)
-	fields := make([]run.Field, len(keys))
-	for i, key := range keys {
-		// A key with no fieldKeys entry predates types (hand-seeded store);
-		// label is the behaviour those keys have always had.
-		fieldType := run.Label
-		if declared, ok := st.FieldKeyType(key); ok {
-			fieldType, err = run.ParseFieldType(declared)
-			if err != nil {
-				return fmt.Errorf("field key %q in %s: %w", key, path, err)
-			}
-		}
-		fields[i] = run.Field{Key: key, Type: fieldType}
+	fields, known, err := schemeFields(st, schemeName, path)
+	if err != nil {
+		return err
 	}
 
 	files, err := source.List(srcDir)
