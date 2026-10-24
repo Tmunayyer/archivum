@@ -79,8 +79,8 @@ func TestSchemeFields(t *testing.T) {
 	t.Run("a stored scheme with no field keys fails fast naming the scheme", func(t *testing.T) {
 		st, path := loadStore(t, `{"version":1,"fieldKeys":{},"values":{},"schemes":{"empty":[]}}`)
 		_, _, err := schemeFields(st, "empty", path)
-		if err == nil || !strings.Contains(err.Error(), `"empty"`) {
-			t.Fatalf("schemeFields() = %v, want an error naming the empty scheme", err)
+		if err == nil || !strings.Contains(err.Error(), `"empty"`) || !strings.Contains(err.Error(), path) {
+			t.Fatalf("schemeFields() = %v, want an error naming the empty scheme and the store", err)
 		}
 	})
 

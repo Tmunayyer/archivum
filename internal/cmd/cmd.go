@@ -106,7 +106,7 @@ func preflight(lookPath func(string) (string, error), getenv func(string) string
 func schemeFields(st *store.Store, schemeName, path string) ([]run.Field, bool, error) {
 	keys, known := st.Scheme(schemeName)
 	if known && len(keys) == 0 {
-		return nil, true, fmt.Errorf("scheme %q in %s has no field keys — add keys to it or delete it and re-run to compose it", schemeName, path)
+		return nil, false, fmt.Errorf("scheme %q in %s has no field keys — add keys to it or delete it and re-run to compose it", schemeName, path)
 	}
 	fields := make([]run.Field, len(keys))
 	for i, key := range keys {
@@ -117,7 +117,7 @@ func schemeFields(st *store.Store, schemeName, path string) ([]run.Field, bool, 
 			var err error
 			fieldType, err = run.ParseFieldType(declared)
 			if err != nil {
-				return nil, true, fmt.Errorf("field key %q in %s: %w", key, path, err)
+				return nil, false, fmt.Errorf("field key %q in %s: %w", key, path, err)
 			}
 		}
 		fields[i] = run.Field{Key: key, Type: fieldType}

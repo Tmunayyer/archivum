@@ -159,7 +159,8 @@ type Model struct {
 
 // New builds a model over the batch: files carry full source paths in
 // processing order (capture order, per ADR-0010), fields the scheme's
-// field keys in prompt order, each with its type (ADR-0008).
+// field keys in prompt order, each with its type (ADR-0008). fields must
+// be non-empty — the caller rejects a zero-key scheme (#23).
 func New(files []File, fields []Field, deps Deps) Model {
 	m := newModel(files, deps)
 	m.fields = fields
