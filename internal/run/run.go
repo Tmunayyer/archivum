@@ -284,8 +284,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyDown:
 			return m.cursorDown(), nil
 		case tea.KeyRunes, tea.KeySpace, tea.KeyBackspace:
-			// Typing (or editing) leaves the list — even a rejected keystroke,
-			// so the rejection is judged against the free-form entry it names.
+			// Typing (or editing) leaves the offer list — even a rejected
+			// keystroke, whose note is about the free-form entry.
 			m.rc = -1
 			if msg.Type != tea.KeyBackspace && m.fields[m.fx].Type == Number && !numberAccepts(m.input.Value(), msg) {
 				m.note = "a number is digits with at most one decimal point"

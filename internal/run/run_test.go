@@ -636,17 +636,32 @@ func TestNumberField(t *testing.T) {
 		}
 	})
 
-	t.Run("a rejected keystroke on a recent still leaves the list for free-form entry", func(t *testing.T) {
+	t.Run("a rejected keystroke on a recent still leaves the offer list for free-form entry", func(t *testing.T) {
 		st := testStore(t)
 		st.RecordValue("weight-lb", "185")
 		dest := &fakeDest{}
 		m := run.New(sources("/src/a.mp4"), weight, run.Deps{Store: st, Dest: dest})
-		m = drive(t, m, typed("x"), enter) // the cursor starts on 185
+		m = drive(t, m, typed("x")) // the cursor starts on 185
+		if !strings.Contains(m.View(), "digit") {
+			t.Fatalf("View() = %q, want a visible rejection of x", m.View())
+		}
+		m = drive(t, m, enter)
 		if len(dest.copies) != 0 {
 			t.Fatalf("copies = %v, want none — the rejection refers to free-form entry, so 185 must no longer be highlighted", dest.copies)
 		}
 		if !strings.Contains(m.View(), "required") {
 			t.Fatalf("View() = %q, want the empty-entry rejection", m.View())
+		}
+	})
+
+	t.Run("a rejected keystroke on a recent returns to the free-form entry already typed", func(t *testing.T) {
+		st := testStore(t)
+		st.RecordValue("weight-lb", "185")
+		dest := &fakeDest{}
+		m := run.New(sources("/src/a.mp4"), weight, run.Deps{Store: st, Dest: dest})
+		drive(t, m, up, typed("1"), down, typed("x"), enter)
+		if len(dest.copies) != 1 || dest.copies[0].name != "1.mp4" {
+			t.Fatalf("copies = %v, want 1.mp4 — the rejection is judged against the entry, not the recent", dest.copies)
 		}
 	})
 
