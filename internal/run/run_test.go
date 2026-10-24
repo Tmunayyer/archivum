@@ -636,6 +636,20 @@ func TestNumberField(t *testing.T) {
 		}
 	})
 
+	t.Run("a rejected keystroke on a recent still leaves the list for free-form entry", func(t *testing.T) {
+		st := testStore(t)
+		st.RecordValue("weight-lb", "185")
+		dest := &fakeDest{}
+		m := run.New(sources("/src/a.mp4"), weight, run.Deps{Store: st, Dest: dest})
+		m = drive(t, m, typed("x"), enter) // the cursor starts on 185
+		if len(dest.copies) != 0 {
+			t.Fatalf("copies = %v, want none — the rejection refers to free-form entry, so 185 must no longer be highlighted", dest.copies)
+		}
+		if !strings.Contains(m.View(), "required") {
+			t.Fatalf("View() = %q, want the empty-entry rejection", m.View())
+		}
+	})
+
 	t.Run("space is rejected", func(t *testing.T) {
 		dest := &fakeDest{}
 		m := run.New(sources("/src/a.mp4"), weight, run.Deps{Store: &fakeStore{}, Dest: dest})
